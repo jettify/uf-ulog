@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Expr, Fields, Lit, LitStr, Type};
+use syn::{parse_macro_input, DeriveInput, Expr, Fields, Lit, LitStr, Type, TypeArray, TypePath};
 
 enum ULogType {
     Scalar {
@@ -49,6 +49,12 @@ pub fn derive_ulog_message(input: TokenStream) -> TokenStream {
 
 fn expand_derive(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let ident = &input.ident;
+    if !input.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &input.generics,
+            "ULogMessage does not support structs with generics yet; remove generic parameters or implement `::uf_ulog::ULogMessage` manually",
+        ));
+    }
     let fields = extract_named_fields(&input.data, ident)?;
     validate_timestamp_field(fields, ident)?;
 
@@ -69,7 +75,11 @@ fn expand_derive(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
 fn extract_ulog_name(input: &DeriveInput) -> syn::Result<LitStr> {
     let mut name = None;
-    for attr in input.attrs.iter().filter(|attr| attr.path().is_ident("uf_ulog")) {
+    for attr in input
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("uf_ulog"))
+    {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("name") {
                 if name.is_some() {
@@ -110,7 +120,7 @@ fn validate_timestamp_field(
 ) -> syn::Result<()> {
     let timestamp_field = fields
         .iter()
-        .find(|f| f.ident.as_ref().map_or(false, |id| id == "timestamp"))
+        .find(|f| f.ident.as_ref().is_some_and(|id| id == "timestamp"))
         .ok_or_else(|| {
             syn::Error::new_spanned(ident, "ULog message must contain a `timestamp: u64` field")
         })?;
@@ -178,13 +188,21 @@ fn is_u64_type(ty: &Type) -> bool {
 
 fn primitive_type_name(ty: &Type) -> Option<&syn::Ident> {
     match ty {
-        Type::Path(type_path)
-            if type_path.qself.is_none() && type_path.path.segments.len() == 1 =>
-        {
-            Some(&type_path.path.segments[0].ident)
-        }
+        Type::Path(type_path) if is_simple_path(type_path) => primitive_ident_from_path(type_path),
         _ => None,
     }
+}
+
+fn is_simple_path(type_path: &TypePath) -> bool {
+    type_path.qself.is_none() && type_path.path.segments.len() == 1
+}
+
+fn primitive_ident_from_path(type_path: &TypePath) -> Option<&syn::Ident> {
+    type_path
+        .path
+        .segments
+        .first()
+        .map(|segment| &segment.ident)
 }
 
 fn primitive_spec(ident: &syn::Ident) -> Option<(&'static str, usize)> {
@@ -205,31 +223,39 @@ fn primitive_spec(ident: &syn::Ident) -> Option<(&'static str, usize)> {
 }
 
 fn type_spec(ty: &Type) -> Result<ULogType, syn::Error> {
-    if let Some(ident) = primitive_type_name(ty) {
-        if let Some((ulog_name, size)) = primitive_spec(ident) {
-            return Ok(ULogType::Scalar { ulog_name, size });
-        }
-    }
-
     match ty {
-        Type::Array(array_ty) => {
-            let elem_ident = primitive_type_name(&array_ty.elem).ok_or_else(|| {
-                syn::Error::new_spanned(&array_ty.elem, "unsupported array element type")
-            })?;
-            let (elem_ulog_name, elem_size) = primitive_spec(elem_ident).ok_or_else(|| {
-                syn::Error::new_spanned(&array_ty.elem, "unsupported array element type")
-            })?;
-
-            let len = extract_array_len(&array_ty.len)?;
-
-            Ok(ULogType::Array {
-                elem_ulog_name,
-                elem_size,
-                len,
-            })
-        }
-        _ => Err(syn::Error::new_spanned(ty, "unsupported field type")),
+        Type::Array(array_ty) => parse_array_type(array_ty),
+        Type::Path(type_path) if is_simple_path(type_path) => parse_primitive_type(type_path),
+        _ => Err(unsupported_type_error(ty)),
     }
+}
+
+fn parse_primitive_type(type_path: &TypePath) -> Result<ULogType, syn::Error> {
+    let Some(ident) = primitive_ident_from_path(type_path) else {
+        return Err(unsupported_type_error(&Type::Path(type_path.clone())));
+    };
+    let Some((ulog_name, size)) = primitive_spec(ident) else {
+        return Err(unsupported_type_error(&Type::Path(type_path.clone())));
+    };
+    Ok(ULogType::Scalar { ulog_name, size })
+}
+
+fn parse_array_type(array_ty: &TypeArray) -> Result<ULogType, syn::Error> {
+    let elem_ident = primitive_type_name(&array_ty.elem)
+        .ok_or_else(|| syn::Error::new_spanned(&array_ty.elem, "unsupported array element type"))?;
+    let (elem_ulog_name, elem_size) = primitive_spec(elem_ident)
+        .ok_or_else(|| syn::Error::new_spanned(&array_ty.elem, "unsupported array element type"))?;
+    let len = extract_array_len(&array_ty.len)?;
+
+    Ok(ULogType::Array {
+        elem_ulog_name,
+        elem_size,
+        len,
+    })
+}
+
+fn unsupported_type_error(ty: &Type) -> syn::Error {
+    syn::Error::new_spanned(ty, "unsupported field type")
 }
 
 fn extract_array_len(len_expr: &syn::Expr) -> syn::Result<usize> {
