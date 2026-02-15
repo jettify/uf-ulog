@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse_macro_input, DeriveInput, Fields, LitStr, Type};
+use syn::{parse_macro_input, Attribute, DeriveInput, Fields, LitStr, Type};
 
 struct FieldInfo {
     name: String,
@@ -8,7 +8,7 @@ struct FieldInfo {
     size: usize,
 }
 
-#[proc_macro_derive(ULogMessage)]
+#[proc_macro_derive(ULogMessage, attributes(uf_ulog))]
 pub fn derive_ulog_message(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     expand_derive(&input)
@@ -26,7 +26,33 @@ fn expand_derive(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let format_string = build_format_string(&field_infos);
     let size_terms: Vec<usize> = field_infos.iter().map(|fi| fi.size).collect();
 
-    Ok(generate_impl(ident, &format_string, &size_terms))
+    let message_name = extract_ulog_name(input);
+
+    Ok(generate_impl(
+        ident,
+        &message_name,
+        &format_string,
+        &size_terms,
+    ))
+}
+
+fn extract_ulog_name(input: &DeriveInput) -> LitStr {
+    input
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("uf_ulog"))
+        .and_then(|attr| {
+            let mut name = None;
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("name") {
+                    name = Some(meta.value()?.parse()?);
+                }
+                Ok(())
+            })
+            .ok()?;
+            name
+        })
+        .unwrap_or_else(|| LitStr::new(&input.ident.to_string(), input.ident.span()))
 }
 
 fn extract_named_fields<'a>(
@@ -93,6 +119,7 @@ fn build_format_string(field_infos: &[FieldInfo]) -> String {
 
 fn generate_impl(
     ident: &syn::Ident,
+    message_name: &LitStr,
     format_string: &str,
     size_terms: &[usize],
 ) -> proc_macro2::TokenStream {
@@ -100,7 +127,7 @@ fn generate_impl(
 
     quote! {
         impl ::uf_ulog::ULogMessage for #ident {
-            const NAME: &'static str = stringify!(#ident);
+            const NAME: &'static str = #message_name;
             const WIRE_SIZE: usize = 0 #(+ #size_terms)*;
             const FORMAT: &'static str = #format_lit;
 

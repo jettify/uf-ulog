@@ -67,6 +67,7 @@ mod test {
     #[test]
     fn test_derive() {
         #[derive(ULogMessage)]
+        #[uf_ulog(name = "gyro")]
         struct Gyro {
             pub timestamp: u64,
             pub x: f32,
@@ -86,6 +87,6 @@ mod test {
         assert_eq!(g.z, 0.0);
         assert_eq!(Gyro::WIRE_SIZE, 20);
         assert_eq!(Gyro::FORMAT, "uint64_t timestamp;float x;float y;float z;");
-        assert_eq!(Gyro::NAME, "Gyro");
+        assert_eq!(Gyro::NAME, "gyro");
     }
 }
