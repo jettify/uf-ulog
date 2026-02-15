@@ -1,11 +1,42 @@
 use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
-use syn::{parse_macro_input, Attribute, DeriveInput, Fields, LitStr, Type};
+use quote::quote;
+use syn::{parse_macro_input, DeriveInput, Expr, Fields, Lit, LitStr, Type};
+
+enum ULogType {
+    Scalar {
+        ulog_name: &'static str,
+        size: usize,
+    },
+    Array {
+        elem_ulog_name: &'static str,
+        elem_size: usize,
+        len: usize,
+    },
+}
+
+impl ULogType {
+    fn size(&self) -> usize {
+        match self {
+            Self::Scalar { size, .. } => *size,
+            Self::Array { elem_size, len, .. } => elem_size * len,
+        }
+    }
+
+    fn format_ulog(&self) -> String {
+        match self {
+            Self::Scalar { ulog_name, .. } => ulog_name.to_string(),
+            Self::Array {
+                elem_ulog_name,
+                len,
+                ..
+            } => format!("{elem_ulog_name}[{len}]"),
+        }
+    }
+}
 
 struct FieldInfo {
     name: String,
-    ulog_type: &'static str,
-    size: usize,
+    ty: ULogType,
 }
 
 #[proc_macro_derive(ULogMessage, attributes(uf_ulog))]
@@ -24,9 +55,9 @@ fn expand_derive(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let field_infos: Vec<FieldInfo> = fields.iter().map(process_field).collect::<Result<_, _>>()?;
 
     let format_string = build_format_string(&field_infos);
-    let size_terms: Vec<usize> = field_infos.iter().map(|fi| fi.size).collect();
+    let size_terms: Vec<usize> = field_infos.iter().map(|fi| fi.ty.size()).collect();
 
-    let message_name = extract_ulog_name(input);
+    let message_name = extract_ulog_name(input)?;
 
     Ok(generate_impl(
         ident,
@@ -36,23 +67,22 @@ fn expand_derive(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     ))
 }
 
-fn extract_ulog_name(input: &DeriveInput) -> LitStr {
-    input
-        .attrs
-        .iter()
-        .find(|attr| attr.path().is_ident("uf_ulog"))
-        .and_then(|attr| {
-            let mut name = None;
-            attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("name") {
-                    name = Some(meta.value()?.parse()?);
+fn extract_ulog_name(input: &DeriveInput) -> syn::Result<LitStr> {
+    let mut name = None;
+    for attr in input.attrs.iter().filter(|attr| attr.path().is_ident("uf_ulog")) {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("name") {
+                if name.is_some() {
+                    return Err(meta.error("duplicate `name` in `#[uf_ulog(...)]`"));
                 }
-                Ok(())
-            })
-            .ok()?;
-            name
-        })
-        .unwrap_or_else(|| LitStr::new(&input.ident.to_string(), input.ident.span()))
+                name = Some(meta.value()?.parse::<LitStr>()?);
+                return Ok(());
+            }
+            Err(meta.error("unsupported uf_ulog attribute key, expected `name`"))
+        })?;
+    }
+
+    Ok(name.unwrap_or_else(|| LitStr::new(&input.ident.to_string(), input.ident.span())))
 }
 
 fn extract_named_fields<'a>(
@@ -100,19 +130,18 @@ fn process_field(field: &syn::Field) -> Result<FieldInfo, syn::Error> {
         .ident
         .as_ref()
         .ok_or_else(|| syn::Error::new_spanned(field, "expected named field"))?;
-    let (ulog_type, size) = primitive_spec(&field.ty)?;
+    let ty = type_spec(&field.ty)?;
 
     Ok(FieldInfo {
         name: field_name.to_string(),
-        ulog_type,
-        size,
+        ty,
     })
 }
 
 fn build_format_string(field_infos: &[FieldInfo]) -> String {
     field_infos
         .iter()
-        .map(|fi| format!("{} {};", fi.ulog_type, fi.name))
+        .map(|fi| format!("{} {};", fi.ty.format_ulog(), fi.name))
         .collect::<Vec<_>>()
         .join("")
 }
@@ -144,29 +173,77 @@ fn generate_impl(
 }
 
 fn is_u64_type(ty: &Type) -> bool {
-    ty.to_token_stream().to_string().replace(' ', "") == "u64"
+    primitive_type_name(ty).is_some_and(|ident| ident == "u64")
 }
 
-fn primitive_spec(ty: &Type) -> Result<(&'static str, usize), syn::Error> {
-    let ty_str = ty.to_token_stream().to_string().replace(' ', "");
-
-    let (ulog_type_name, sz) = match ty_str.as_str() {
-        "u8" => ("uint8_t", 1usize),
-        "i8" => ("int8_t", 1usize),
-        "u16" => ("uint16_t", 2usize),
-        "i16" => ("int16_t", 2usize),
-        "u32" => ("uint32_t", 4usize),
-        "i32" => ("int32_t", 4usize),
-        "u64" => ("uint64_t", 8usize),
-        "i64" => ("int64_t", 8usize),
-        "f32" => ("float", 4usize),
-        "f64" => ("double", 8usize),
-        "bool" => ("bool", 1usize),
-        "char" => ("char", 1usize),
-        _ => {
-            return Err(syn::Error::new_spanned(ty, "unsupported field type"));
+fn primitive_type_name(ty: &Type) -> Option<&syn::Ident> {
+    match ty {
+        Type::Path(type_path)
+            if type_path.qself.is_none() && type_path.path.segments.len() == 1 =>
+        {
+            Some(&type_path.path.segments[0].ident)
         }
-    };
+        _ => None,
+    }
+}
 
-    Ok((ulog_type_name, sz))
+fn primitive_spec(ident: &syn::Ident) -> Option<(&'static str, usize)> {
+    match ident.to_string().as_str() {
+        "u8" => Some(("uint8_t", 1)),
+        "i8" => Some(("int8_t", 1)),
+        "u16" => Some(("uint16_t", 2)),
+        "i16" => Some(("int16_t", 2)),
+        "u32" => Some(("uint32_t", 4)),
+        "i32" => Some(("int32_t", 4)),
+        "u64" => Some(("uint64_t", 8)),
+        "i64" => Some(("int64_t", 8)),
+        "f32" => Some(("float", 4)),
+        "f64" => Some(("double", 8)),
+        "bool" => Some(("bool", 1)),
+        _ => None,
+    }
+}
+
+fn type_spec(ty: &Type) -> Result<ULogType, syn::Error> {
+    if let Some(ident) = primitive_type_name(ty) {
+        if let Some((ulog_name, size)) = primitive_spec(ident) {
+            return Ok(ULogType::Scalar { ulog_name, size });
+        }
+    }
+
+    match ty {
+        Type::Array(array_ty) => {
+            let elem_ident = primitive_type_name(&array_ty.elem).ok_or_else(|| {
+                syn::Error::new_spanned(&array_ty.elem, "unsupported array element type")
+            })?;
+            let (elem_ulog_name, elem_size) = primitive_spec(elem_ident).ok_or_else(|| {
+                syn::Error::new_spanned(&array_ty.elem, "unsupported array element type")
+            })?;
+
+            let len = extract_array_len(&array_ty.len)?;
+
+            Ok(ULogType::Array {
+                elem_ulog_name,
+                elem_size,
+                len,
+            })
+        }
+        _ => Err(syn::Error::new_spanned(ty, "unsupported field type")),
+    }
+}
+
+fn extract_array_len(len_expr: &syn::Expr) -> syn::Result<usize> {
+    match len_expr {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            Lit::Int(int_lit) => int_lit.base10_parse::<usize>(),
+            _ => Err(syn::Error::new_spanned(
+                len_expr,
+                "array length must be an integer literal",
+            )),
+        },
+        _ => Err(syn::Error::new_spanned(
+            len_expr,
+            "array length must be an integer literal",
+        )),
+    }
 }
