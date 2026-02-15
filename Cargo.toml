@@ -1,0 +1,12 @@
+[workspace]
+members = ["uf_ulog", "uf_ulog_macro"]
+resolver = "2"
+
+[workspace.package]
+rust-version = "1.87"
+edition = "2021"
+license = "GPL-3.0"
+authors = ["Mykola Novik <mykola@uflight.dev>"]
+repository = "https://github.com/jettify/uflihgt"
+
+[workspace.dependencies]

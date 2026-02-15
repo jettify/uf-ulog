@@ -1,0 +1,21 @@
+[package]
+publish = true
+name = "uf_ulog_macro"
+version = "0.1.0"
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0.106"
+quote = "1.0.44"
+syn = "2.0.115"
+
+[dev-dependencies]
+trybuild = "1.0.114"
+uf_ulog = { path = "../uf_ulog" }
