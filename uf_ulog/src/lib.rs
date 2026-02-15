@@ -7,9 +7,9 @@
 extern crate self as uf_ulog;
 
 #[cfg(feature = "derive")]
-pub use uf_ulog_macro::ULogMessage;
+pub use uf_ulog_macro::ULogData;
 
-pub trait ULogMessage {
+pub trait ULogData {
     const FORMAT: &'static str;
     const NAME: &'static str;
     const WIRE_SIZE: usize;
@@ -32,7 +32,7 @@ mod test {
             pub z: f32,
         }
 
-        impl ULogMessage for Acc {
+        impl ULogData for Acc {
             const FORMAT: &'static str = "uint64_t timestamp;float x;float y;float z;";
             const NAME: &'static str = "Acc";
             const WIRE_SIZE: usize = 20;
@@ -66,7 +66,7 @@ mod test {
 
     #[test]
     fn test_derive() {
-        #[derive(ULogMessage)]
+        #[derive(ULogData)]
         #[uf_ulog(name = "gyro")]
         struct Gyro {
             pub timestamp: u64,

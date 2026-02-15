@@ -39,7 +39,7 @@ struct FieldInfo {
     ty: ULogType,
 }
 
-#[proc_macro_derive(ULogMessage, attributes(uf_ulog))]
+#[proc_macro_derive(ULogData, attributes(uf_ulog))]
 pub fn derive_ulog_message(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     expand_derive(&input)
@@ -52,7 +52,7 @@ fn expand_derive(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
             &input.generics,
-            "ULogMessage does not support structs with generics yet; remove generic parameters or implement `::uf_ulog::ULogMessage` manually",
+            "ULogData does not support structs with generics yet; remove generic parameters or implement `::uf_ulog::ULogData` manually",
         ));
     }
     let fields = extract_named_fields(&input.data, ident)?;
@@ -104,12 +104,12 @@ fn extract_named_fields<'a>(
             Fields::Named(fields) => Ok(&fields.named),
             _ => Err(syn::Error::new_spanned(
                 ident,
-                "ULogMessage requires a struct with named fields",
+                "ULogData requires a struct with named fields",
             )),
         },
         _ => Err(syn::Error::new_spanned(
             ident,
-            "Only structs can derive ULogMessage",
+            "Only structs can derive ULogData",
         )),
     }
 }
@@ -165,7 +165,7 @@ fn generate_impl(
     let format_lit = LitStr::new(format_string, ident.span());
 
     quote! {
-        impl ::uf_ulog::ULogMessage for #ident {
+        impl ::uf_ulog::ULogData for #ident {
             const NAME: &'static str = #message_name;
             const WIRE_SIZE: usize = 0 #(+ #size_terms)*;
             const FORMAT: &'static str = #format_lit;
