@@ -14,8 +14,13 @@ pub trait ULogData {
     const NAME: &'static str;
     const WIRE_SIZE: usize;
 
-    fn encode(&self, buf: &mut [u8]);
+    fn encode(&self, buf: &mut [u8]) -> Result<(), EncodeError>;
     fn timestamp(&self) -> u64;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodeError {
+    BufferOverflow,
 }
 
 #[cfg(test)]
@@ -41,29 +46,45 @@ mod test {
                 self.timestamp
             }
 
-            fn encode(&self, buf: &mut [u8]) {
+            fn encode(&self, buf: &mut [u8]) -> Result<(), EncodeError> {
+                if buf.len() < Self::WIRE_SIZE {
+                    return Err(EncodeError::BufferOverflow);
+                }
+
                 buf[0..8].copy_from_slice(&self.timestamp().to_le_bytes());
-                buf[9..13].copy_from_slice(&self.x.to_le_bytes());
-                buf[13..15].copy_from_slice(&self.y.to_le_bytes());
-                buf[17..21].copy_from_slice(&self.z.to_le_bytes());
+                buf[8..12].copy_from_slice(&self.x.to_le_bytes());
+                buf[12..16].copy_from_slice(&self.y.to_le_bytes());
+                buf[16..20].copy_from_slice(&self.z.to_le_bytes());
+                Ok(())
             }
         }
 
         let a = Acc {
-            timestamp: 0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
+            timestamp: 0x0807_0605_0403_0201,
+            x: 1.0,
+            y: -2.5,
+            z: 0.5,
         };
-        assert_eq!(a.timestamp(), 0);
-        assert_eq!(a.x, 0.0);
-        assert_eq!(a.y, 0.0);
-        assert_eq!(a.z, 0.0);
+        assert_eq!(a.timestamp(), 0x0807_0605_0403_0201);
+        assert_eq!(a.x, 1.0);
+        assert_eq!(a.y, -2.5);
+        assert_eq!(a.z, 0.5);
         assert_eq!(Acc::FORMAT, "uint64_t timestamp;float x;float y;float z;");
         assert_eq!(Acc::NAME, "Acc");
         assert_eq!(Acc::WIRE_SIZE, 20);
+
+        let mut encoded = [0u8; Acc::WIRE_SIZE];
+        a.encode(&mut encoded).unwrap();
+        assert_eq!(
+            encoded,
+            [1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 128, 63, 0, 0, 32, 192, 0, 0, 0, 63,]
+        );
+
+        let mut short = [0u8; Acc::WIRE_SIZE - 1];
+        assert_eq!(a.encode(&mut short), Err(EncodeError::BufferOverflow));
     }
 
+    #[cfg(feature = "derive")]
     #[test]
     fn test_derive() {
         #[derive(ULogData)]
@@ -76,17 +97,27 @@ mod test {
         }
 
         let g = Gyro {
-            timestamp: 0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
+            timestamp: 0x0807_0605_0403_0201,
+            x: 1.0,
+            y: -2.5,
+            z: 0.5,
         };
-        assert_eq!(g.timestamp(), 0);
-        assert_eq!(g.x, 0.0);
-        assert_eq!(g.y, 0.0);
-        assert_eq!(g.z, 0.0);
+        assert_eq!(g.timestamp(), 0x0807_0605_0403_0201);
+        assert_eq!(g.x, 1.0);
+        assert_eq!(g.y, -2.5);
+        assert_eq!(g.z, 0.5);
         assert_eq!(Gyro::WIRE_SIZE, 20);
         assert_eq!(Gyro::FORMAT, "uint64_t timestamp;float x;float y;float z;");
         assert_eq!(Gyro::NAME, "gyro");
+
+        let mut encoded = [0u8; Gyro::WIRE_SIZE];
+        g.encode(&mut encoded).unwrap();
+        assert_eq!(
+            encoded,
+            [1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 128, 63, 0, 0, 32, 192, 0, 0, 0, 63,]
+        );
+
+        let mut short = [0u8; Gyro::WIRE_SIZE - 1];
+        assert_eq!(g.encode(&mut short), Err(EncodeError::BufferOverflow));
     }
 }

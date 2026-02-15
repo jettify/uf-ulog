@@ -2,14 +2,54 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput, Expr, Fields, Lit, LitStr, Type, TypeArray, TypePath};
 
+#[derive(Clone, Copy)]
+enum PrimitiveKind {
+    U8,
+    I8,
+    U16,
+    I16,
+    U32,
+    I32,
+    U64,
+    I64,
+    F32,
+    F64,
+    Bool,
+}
+
+impl PrimitiveKind {
+    fn size(self) -> usize {
+        match self {
+            Self::U8 | Self::I8 | Self::Bool => 1,
+            Self::U16 | Self::I16 => 2,
+            Self::U32 | Self::I32 | Self::F32 => 4,
+            Self::U64 | Self::I64 | Self::F64 => 8,
+        }
+    }
+
+    fn ulog_name(self) -> &'static str {
+        match self {
+            Self::U8 => "uint8_t",
+            Self::I8 => "int8_t",
+            Self::U16 => "uint16_t",
+            Self::I16 => "int16_t",
+            Self::U32 => "uint32_t",
+            Self::I32 => "int32_t",
+            Self::U64 => "uint64_t",
+            Self::I64 => "int64_t",
+            Self::F32 => "float",
+            Self::F64 => "double",
+            Self::Bool => "bool",
+        }
+    }
+}
+
 enum ULogType {
     Scalar {
-        ulog_name: &'static str,
-        size: usize,
+        kind: PrimitiveKind,
     },
     Array {
-        elem_ulog_name: &'static str,
-        elem_size: usize,
+        elem_kind: PrimitiveKind,
         len: usize,
     },
 }
@@ -17,24 +57,21 @@ enum ULogType {
 impl ULogType {
     fn size(&self) -> usize {
         match self {
-            Self::Scalar { size, .. } => *size,
-            Self::Array { elem_size, len, .. } => elem_size * len,
+            Self::Scalar { kind } => kind.size(),
+            Self::Array { elem_kind, len } => elem_kind.size() * len,
         }
     }
 
     fn format_ulog(&self) -> String {
         match self {
-            Self::Scalar { ulog_name, .. } => ulog_name.to_string(),
-            Self::Array {
-                elem_ulog_name,
-                len,
-                ..
-            } => format!("{elem_ulog_name}[{len}]"),
+            Self::Scalar { kind } => kind.ulog_name().to_string(),
+            Self::Array { elem_kind, len } => format!("{}[{len}]", elem_kind.ulog_name()),
         }
     }
 }
 
 struct FieldInfo {
+    ident: syn::Ident,
     name: String,
     ty: ULogType,
 }
@@ -62,6 +99,7 @@ fn expand_derive(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
     let format_string = build_format_string(&field_infos);
     let size_terms: Vec<usize> = field_infos.iter().map(|fi| fi.ty.size()).collect();
+    let encode_body = build_encode_body(&field_infos);
 
     let message_name = extract_ulog_name(input)?;
 
@@ -70,6 +108,7 @@ fn expand_derive(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         &message_name,
         &format_string,
         &size_terms,
+        &encode_body,
     ))
 }
 
@@ -143,6 +182,7 @@ fn process_field(field: &syn::Field) -> Result<FieldInfo, syn::Error> {
     let ty = type_spec(&field.ty)?;
 
     Ok(FieldInfo {
+        ident: field_name.clone(),
         name: field_name.to_string(),
         ty,
     })
@@ -161,6 +201,7 @@ fn generate_impl(
     message_name: &LitStr,
     format_string: &str,
     size_terms: &[usize],
+    encode_body: &[proc_macro2::TokenStream],
 ) -> proc_macro2::TokenStream {
     let format_lit = LitStr::new(format_string, ident.span());
 
@@ -171,14 +212,74 @@ fn generate_impl(
             const FORMAT: &'static str = #format_lit;
 
             #[inline]
-            fn encode(&self, buf: &mut [u8]) {
-                let _ = buf;
+            fn encode(&self, buf: &mut [u8]) -> ::core::result::Result<(), ::uf_ulog::EncodeError> {
+                if buf.len() < Self::WIRE_SIZE {
+                    return Err(::uf_ulog::EncodeError::BufferOverflow);
+                }
+                let mut offset = 0usize;
+                #(#encode_body)*
+                Ok(())
             }
             #[inline]
             fn timestamp(&self) -> u64 {
                 self.timestamp
             }
         }
+    }
+}
+
+fn build_encode_body(field_infos: &[FieldInfo]) -> Vec<proc_macro2::TokenStream> {
+    field_infos
+        .iter()
+        .map(|field| {
+            let field_ident = &field.ident;
+            match field.ty {
+                ULogType::Scalar { kind } => {
+                    encode_primitive_tokens(quote!(self.#field_ident), kind)
+                }
+                ULogType::Array { elem_kind, .. } => {
+                    let elem_tokens = encode_primitive_tokens(quote!(*value), elem_kind);
+                    quote! {
+                        for value in &self.#field_ident {
+                            #elem_tokens
+                        }
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+fn encode_primitive_tokens(
+    value_tokens: proc_macro2::TokenStream,
+    kind: PrimitiveKind,
+) -> proc_macro2::TokenStream {
+    match kind {
+        PrimitiveKind::U8 => quote! {
+            buf[offset] = #value_tokens;
+            offset += 1;
+        },
+        PrimitiveKind::I8 => quote! {
+            buf[offset] = (#value_tokens) as u8;
+            offset += 1;
+        },
+        PrimitiveKind::Bool => quote! {
+            buf[offset] = u8::from(#value_tokens);
+            offset += 1;
+        },
+        PrimitiveKind::U16
+        | PrimitiveKind::I16
+        | PrimitiveKind::U32
+        | PrimitiveKind::I32
+        | PrimitiveKind::U64
+        | PrimitiveKind::I64
+        | PrimitiveKind::F32
+        | PrimitiveKind::F64 => quote! {
+            let bytes = (#value_tokens).to_le_bytes();
+            let end = offset + bytes.len();
+            buf[offset..end].copy_from_slice(&bytes);
+            offset = end;
+        },
     }
 }
 
@@ -205,19 +306,19 @@ fn primitive_ident_from_path(type_path: &TypePath) -> Option<&syn::Ident> {
         .map(|segment| &segment.ident)
 }
 
-fn primitive_spec(ident: &syn::Ident) -> Option<(&'static str, usize)> {
+fn primitive_spec(ident: &syn::Ident) -> Option<PrimitiveKind> {
     match ident.to_string().as_str() {
-        "u8" => Some(("uint8_t", 1)),
-        "i8" => Some(("int8_t", 1)),
-        "u16" => Some(("uint16_t", 2)),
-        "i16" => Some(("int16_t", 2)),
-        "u32" => Some(("uint32_t", 4)),
-        "i32" => Some(("int32_t", 4)),
-        "u64" => Some(("uint64_t", 8)),
-        "i64" => Some(("int64_t", 8)),
-        "f32" => Some(("float", 4)),
-        "f64" => Some(("double", 8)),
-        "bool" => Some(("bool", 1)),
+        "u8" => Some(PrimitiveKind::U8),
+        "i8" => Some(PrimitiveKind::I8),
+        "u16" => Some(PrimitiveKind::U16),
+        "i16" => Some(PrimitiveKind::I16),
+        "u32" => Some(PrimitiveKind::U32),
+        "i32" => Some(PrimitiveKind::I32),
+        "u64" => Some(PrimitiveKind::U64),
+        "i64" => Some(PrimitiveKind::I64),
+        "f32" => Some(PrimitiveKind::F32),
+        "f64" => Some(PrimitiveKind::F64),
+        "bool" => Some(PrimitiveKind::Bool),
         _ => None,
     }
 }
@@ -234,24 +335,20 @@ fn parse_primitive_type(type_path: &TypePath) -> Result<ULogType, syn::Error> {
     let Some(ident) = primitive_ident_from_path(type_path) else {
         return Err(unsupported_type_error(&Type::Path(type_path.clone())));
     };
-    let Some((ulog_name, size)) = primitive_spec(ident) else {
+    let Some(kind) = primitive_spec(ident) else {
         return Err(unsupported_type_error(&Type::Path(type_path.clone())));
     };
-    Ok(ULogType::Scalar { ulog_name, size })
+    Ok(ULogType::Scalar { kind })
 }
 
 fn parse_array_type(array_ty: &TypeArray) -> Result<ULogType, syn::Error> {
     let elem_ident = primitive_type_name(&array_ty.elem)
         .ok_or_else(|| syn::Error::new_spanned(&array_ty.elem, "unsupported array element type"))?;
-    let (elem_ulog_name, elem_size) = primitive_spec(elem_ident)
+    let elem_kind = primitive_spec(elem_ident)
         .ok_or_else(|| syn::Error::new_spanned(&array_ty.elem, "unsupported array element type"))?;
     let len = extract_array_len(&array_ty.len)?;
 
-    Ok(ULogType::Array {
-        elem_ulog_name,
-        elem_size,
-        len,
-    })
+    Ok(ULogType::Array { elem_kind, len })
 }
 
 fn unsupported_type_error(ty: &Type) -> syn::Error {
