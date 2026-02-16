@@ -1,0 +1,5 @@
+error: unsupported field type
+ --> tests/ui/fail_unsupported_type.rs:4:13
+  |
+4 |     values: Vec<u8>,
+  |             ^^^^^^^

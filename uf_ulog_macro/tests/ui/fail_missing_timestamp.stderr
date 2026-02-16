@@ -1,0 +1,5 @@
+error: ULog message must contain a `timestamp: u64` field
+ --> tests/ui/fail_missing_timestamp.rs:2:8
+  |
+2 | struct MissingTimestamp {
+  |        ^^^^^^^^^^^^^^^^

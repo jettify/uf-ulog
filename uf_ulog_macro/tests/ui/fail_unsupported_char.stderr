@@ -1,0 +1,5 @@
+error: unsupported field type
+ --> tests/ui/fail_unsupported_char.rs:4:9
+  |
+4 |     ch: char,
+  |         ^^^^

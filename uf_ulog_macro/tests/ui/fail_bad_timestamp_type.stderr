@@ -1,0 +1,5 @@
+error: `timestamp` field must be `u64` for ULog compatibility
+ --> tests/ui/fail_bad_timestamp_type.rs:3:16
+  |
+3 |     timestamp: u32,
+  |                ^^^

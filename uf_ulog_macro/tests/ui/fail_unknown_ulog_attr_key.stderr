@@ -1,0 +1,5 @@
+error: unsupported uf_ulog attribute key, expected `name`
+ --> tests/ui/fail_unknown_ulog_attr_key.rs:2:11
+  |
+2 | #[uf_ulog(title = "gyro")]
+  |           ^^^^^

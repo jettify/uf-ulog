@@ -1,0 +1,5 @@
+error: expected string literal
+ --> tests/ui/fail_bad_name_attr.rs:2:18
+  |
+2 | #[uf_ulog(name = 10)]
+  |                  ^^

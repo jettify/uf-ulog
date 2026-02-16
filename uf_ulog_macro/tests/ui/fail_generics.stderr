@@ -1,0 +1,5 @@
+error: ULogData does not support structs with generics yet; remove generic parameters or implement `::uf_ulog::ULogData` manually
+ --> tests/ui/fail_generics.rs:2:18
+  |
+2 | struct GenericMsg<T> {
+  |                  ^^^
