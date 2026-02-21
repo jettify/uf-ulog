@@ -10,6 +10,7 @@ publish = true
 
 
 [dependencies]
+heapless = "0.8"
 uf_ulog_macro = { path = "../uf_ulog_macro", optional = true }
 
 [features]
