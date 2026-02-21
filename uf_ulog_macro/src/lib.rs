@@ -212,13 +212,13 @@ fn generate_impl(
             const FORMAT: &'static str = #format_lit;
 
             #[inline]
-            fn encode(&self, buf: &mut [u8]) -> ::core::result::Result<(), ::uf_ulog::EncodeError> {
+            fn encode(&self, buf: &mut [u8]) -> ::core::result::Result<usize, ::uf_ulog::EncodeError> {
                 if buf.len() < Self::WIRE_SIZE {
                     return Err(::uf_ulog::EncodeError::BufferOverflow);
                 }
                 let mut offset = 0usize;
                 #(#encode_body)*
-                Ok(())
+                Ok(Self::WIRE_SIZE)
             }
             #[inline]
             fn timestamp(&self) -> u64 {
@@ -275,10 +275,12 @@ fn encode_primitive_tokens(
         | PrimitiveKind::I64
         | PrimitiveKind::F32
         | PrimitiveKind::F64 => quote! {
-            let bytes = (#value_tokens).to_le_bytes();
-            let end = offset + bytes.len();
-            buf[offset..end].copy_from_slice(&bytes);
-            offset = end;
+            {
+                let bytes = (#value_tokens).to_le_bytes();
+                let end = offset + bytes.len();
+                buf[offset..end].copy_from_slice(&bytes);
+                offset = end;
+            }
         },
     }
 }
