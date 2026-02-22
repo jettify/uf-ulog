@@ -17,3 +17,4 @@ uf_ulog_macro = { path = "../uf_ulog_macro", optional = true }
 [features]
 default = ["derive"]
 derive = ["dep:uf_ulog_macro"]
+std = []

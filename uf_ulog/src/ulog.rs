@@ -1,10 +1,12 @@
+use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::{LogLevel, Registry, RegistryKey, TopicIndex, ULogData};
-use heapless::String;
+use crate::{
+    DefaultCfg, LogLevel, PayloadBuf, Registry, RegistryKey, TextBuf, TopicIndex, ULogCfg, ULogData,
+};
 
-pub trait RecordSink<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> {
-    fn try_send(&self, record: Record<MAX_TEXT, MAX_PAYLOAD>) -> Result<(), TrySendError>;
+pub trait RecordSink<C: ULogCfg> {
+    fn try_send(&mut self, record: Record<C>) -> Result<(), TrySendError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,53 +22,46 @@ pub enum EmitStatus {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Record<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> {
+pub enum Record<C: ULogCfg> {
     LoggedString {
         level: LogLevel,
         tag: Option<u16>,
         ts: u64,
-        text: String<MAX_TEXT>,
+        text: C::Text,
     },
     Data {
         topic_index: u16,
         instance: u8,
         ts: u64,
         payload_len: u16,
-        payload: [u8; MAX_PAYLOAD],
+        payload: C::Payload,
     },
 }
 
-pub const DEFAULT_MAX_TEXT: usize = 128;
-pub const DEFAULT_MAX_PAYLOAD: usize = 256;
-
-pub struct ULogProducer<
-    'a,
-    Tx,
-    R: RegistryKey,
-    const MAX_TEXT: usize = DEFAULT_MAX_TEXT,
-    const MAX_PAYLOAD: usize = DEFAULT_MAX_PAYLOAD,
-> {
+pub struct ULogProducer<'a, Tx, R: RegistryKey, C: ULogCfg = DefaultCfg> {
     tx: Tx,
     registry: &'a Registry<R>,
     dropped_total: AtomicU32,
+    _cfg: PhantomData<C>,
 }
 
-impl<'a, Tx, R, const MAX_TEXT: usize, const MAX_PAYLOAD: usize>
-    ULogProducer<'a, Tx, R, MAX_TEXT, MAX_PAYLOAD>
+impl<'a, Tx, R, C> ULogProducer<'a, Tx, R, C>
 where
-    Tx: RecordSink<MAX_TEXT, MAX_PAYLOAD>,
+    Tx: RecordSink<C>,
     R: RegistryKey,
+    C: ULogCfg,
 {
     pub fn new(tx: Tx, registry: &'a Registry<R>) -> Self {
         Self {
             tx,
             registry,
             dropped_total: AtomicU32::new(0),
+            _cfg: PhantomData,
         }
     }
 
-    pub fn log(&self, level: LogLevel, ts: u64, msg: &str) -> EmitStatus {
-        let text = make_text::<MAX_TEXT>(msg);
+    pub fn log(&mut self, level: LogLevel, ts: u64, msg: &str) -> EmitStatus {
+        let text = make_text::<C>(msg);
         let record = Record::LoggedString {
             level,
             tag: None,
@@ -76,8 +71,8 @@ where
         self.try_emit(record)
     }
 
-    pub fn log_tagged(&self, level: LogLevel, tag: u16, ts: u64, msg: &str) -> EmitStatus {
-        let text = make_text::<MAX_TEXT>(msg);
+    pub fn log_tagged(&mut self, level: LogLevel, tag: u16, ts: u64, msg: &str) -> EmitStatus {
+        let text = make_text::<C>(msg);
         let record = Record::LoggedString {
             level,
             tag: Some(tag),
@@ -87,44 +82,35 @@ where
         self.try_emit(record)
     }
 
-    pub fn data<T>(&self, value: &T) -> EmitStatus
+    pub fn data<T>(&mut self, value: &T) -> EmitStatus
     where
         T: ULogData + TopicIndex<R>,
     {
         self.data_instance(value, 0)
     }
 
-    pub fn data_with_topic<T: ULogData>(&self, value: &T, topic_index: u16) -> EmitStatus {
-        self.data_instance_with_topic(value, topic_index, 0)
-    }
-
-    pub fn data_instance<T>(&self, value: &T, instance: u8) -> EmitStatus
+    pub fn data_instance<T>(&mut self, value: &T, instance: u8) -> EmitStatus
     where
         T: ULogData + TopicIndex<R>,
     {
         let topic_index = <T as TopicIndex<R>>::INDEX;
-        self.data_instance_with_topic(value, topic_index, instance)
-    }
-
-    pub fn data_instance_with_topic<T: ULogData>(
-        &self,
-        value: &T,
-        topic_index: u16,
-        instance: u8,
-    ) -> EmitStatus {
         if usize::from(topic_index) >= self.registry.len() {
             self.dropped_total.fetch_add(1, Ordering::Relaxed);
             return EmitStatus::Dropped;
         }
 
-        let mut payload = [0u8; MAX_PAYLOAD];
-        let encoded_len = match value.encode(&mut payload) {
+        let mut payload = C::Payload::zeroed();
+        let encoded_len = match value.encode(payload.as_mut_slice()) {
             Ok(encoded_len) => encoded_len,
             Err(_) => {
                 self.dropped_total.fetch_add(1, Ordering::Relaxed);
                 return EmitStatus::Dropped;
             }
         };
+        if encoded_len > C::Payload::CAPACITY {
+            self.dropped_total.fetch_add(1, Ordering::Relaxed);
+            return EmitStatus::Dropped;
+        }
         let payload_len = match u16::try_from(encoded_len) {
             Ok(payload_len) => payload_len,
             Err(_) => {
@@ -132,10 +118,6 @@ where
                 return EmitStatus::Dropped;
             }
         };
-        if usize::from(payload_len) > MAX_PAYLOAD {
-            self.dropped_total.fetch_add(1, Ordering::Relaxed);
-            return EmitStatus::Dropped;
-        }
 
         let record = Record::Data {
             topic_index,
@@ -152,7 +134,7 @@ where
         self.dropped_total.load(Ordering::Relaxed)
     }
 
-    fn try_emit(&self, record: Record<MAX_TEXT, MAX_PAYLOAD>) -> EmitStatus {
+    fn try_emit(&mut self, record: Record<C>) -> EmitStatus {
         match self.tx.try_send(record) {
             Ok(()) => EmitStatus::Emitted,
             Err(TrySendError::Full | TrySendError::Closed) => {
@@ -163,11 +145,11 @@ where
     }
 }
 
-fn make_text<const MAX_TEXT: usize>(msg: &str) -> String<MAX_TEXT> {
+fn make_text<C: ULogCfg>(msg: &str) -> C::Text {
     debug_assert!(msg.is_ascii());
-    let mut text = String::<MAX_TEXT>::new();
-    let end = core::cmp::min(msg.len(), MAX_TEXT);
-    let _ = text.push_str(&msg[..end]);
+    let mut text = C::Text::new();
+    let end = core::cmp::min(msg.len(), C::Text::CAPACITY);
+    text.push_str(&msg[..end]);
     text
 }
 
@@ -177,13 +159,24 @@ mod tests {
     use crate::EncodeError;
     use core::cell::RefCell;
 
-    struct CaptureTx<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> {
-        records: RefCell<[Option<Record<MAX_TEXT, MAX_PAYLOAD>>; 4]>,
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct SmallCfg;
+
+    impl crate::ULogCfg for SmallCfg {
+        type Text = heapless::String<16>;
+        type Payload = [u8; 16];
+        type Streams = [u8; 64];
+
+        const MAX_MULTI_IDS: usize = 8;
+    }
+
+    struct CaptureTx<C: ULogCfg> {
+        records: RefCell<[Option<Record<C>>; 4]>,
         idx: RefCell<usize>,
         fail_after: Option<usize>,
     }
 
-    impl<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> Default for CaptureTx<MAX_TEXT, MAX_PAYLOAD> {
+    impl<C: ULogCfg> Default for CaptureTx<C> {
         fn default() -> Self {
             Self {
                 records: RefCell::new([None, None, None, None]),
@@ -193,7 +186,7 @@ mod tests {
         }
     }
 
-    impl<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> CaptureTx<MAX_TEXT, MAX_PAYLOAD> {
+    impl<C: ULogCfg> CaptureTx<C> {
         fn with_fail_after(fail_after: usize) -> Self {
             Self {
                 records: RefCell::new([None, None, None, None]),
@@ -203,10 +196,8 @@ mod tests {
         }
     }
 
-    impl<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> RecordSink<MAX_TEXT, MAX_PAYLOAD>
-        for CaptureTx<MAX_TEXT, MAX_PAYLOAD>
-    {
-        fn try_send(&self, item: Record<MAX_TEXT, MAX_PAYLOAD>) -> Result<(), TrySendError> {
+    impl<C: ULogCfg> RecordSink<C> for CaptureTx<C> {
+        fn try_send(&mut self, item: Record<C>) -> Result<(), TrySendError> {
             let i = *self.idx.borrow();
             if self.fail_after.is_some_and(|n| i >= n) {
                 return Err(TrySendError::Full);
@@ -242,9 +233,9 @@ mod tests {
 
     #[test]
     fn logs_and_tracks_drops() {
-        let tx = CaptureTx::with_fail_after(1);
+        let tx = CaptureTx::<SmallCfg>::with_fail_after(1);
         let registry = crate::register_messages![SampleData];
-        let producer = ULogProducer::<_, _, 16, 16>::new(tx, &registry);
+        let mut producer = ULogProducer::<_, _, SmallCfg>::new(tx, &registry);
 
         assert_eq!(
             producer.log(LogLevel::Info, 42, "boot"),
@@ -259,9 +250,9 @@ mod tests {
 
     #[test]
     fn encodes_data_event() {
-        let tx = CaptureTx::default();
+        let tx = CaptureTx::<SmallCfg>::default();
         let registry = crate::register_messages![SampleData];
-        let producer = ULogProducer::<_, _, 16, 16>::new(tx, &registry);
+        let mut producer = ULogProducer::<_, _, SmallCfg>::new(tx, &registry);
         let sample = SampleData;
 
         assert_eq!(producer.data(&sample), EmitStatus::Emitted);
@@ -269,9 +260,9 @@ mod tests {
 
     #[test]
     fn emits_default_and_explicit_instance() {
-        let tx = CaptureTx::default();
+        let tx = CaptureTx::<SmallCfg>::default();
         let registry = crate::register_messages![SampleData];
-        let producer = ULogProducer::<_, _, 16, 16>::new(tx, &registry);
+        let mut producer = ULogProducer::<_, _, SmallCfg>::new(tx, &registry);
         let sample = SampleData;
 
         assert_eq!(producer.data(&sample), EmitStatus::Emitted);
@@ -279,24 +270,10 @@ mod tests {
     }
 
     #[test]
-    fn can_emit_with_preallocated_topic_index() {
-        let tx = CaptureTx::default();
+    fn can_use_default_config() {
+        let tx: CaptureTx<crate::DefaultCfg> = CaptureTx::default();
         let registry = crate::register_messages![SampleData];
-        let producer = ULogProducer::<_, _, 16, 16>::new(tx, &registry);
-        let sample = SampleData;
-
-        assert_eq!(producer.data_with_topic(&sample, 0), EmitStatus::Emitted);
-        assert_eq!(
-            producer.data_instance_with_topic(&sample, 0, 2),
-            EmitStatus::Emitted
-        );
-    }
-
-    #[test]
-    fn can_use_default_capacities() {
-        let tx: CaptureTx<DEFAULT_MAX_TEXT, DEFAULT_MAX_PAYLOAD> = CaptureTx::default();
-        let registry = crate::register_messages![SampleData];
-        let producer = ULogProducer::new(tx, &registry);
+        let mut producer = ULogProducer::new(tx, &registry);
 
         assert_eq!(
             producer.log(LogLevel::Info, 42, "boot"),

@@ -7,18 +7,18 @@ extern crate self as uf_ulog;
 
 #[cfg(feature = "derive")]
 pub use uf_ulog_macro::ULogData;
+pub mod adapters;
+mod cfg;
 mod registry;
 mod types;
 mod ulog;
 mod writer;
 
+pub use cfg::{DefaultCfg, PayloadBuf, StreamState, TextBuf, ULogCfg};
 pub use registry::{MessageMeta, Registry, RegistryKey, TopicIndex};
 pub use types::{EncodeError, LogLevel, LoggedString, Subscription, ULogData};
-pub use ulog::{
-    EmitStatus, Record, RecordSink, TrySendError, ULogProducer, DEFAULT_MAX_PAYLOAD,
-    DEFAULT_MAX_TEXT,
-};
-pub use writer::{ExportError, ExportStep, RecordSource, ULogExporter, DEFAULT_MAX_MULTI_IDS};
+pub use ulog::{EmitStatus, Record, RecordSink, TrySendError, ULogProducer};
+pub use writer::{ExportError, ExportStep, RecordSource, ULogExporter};
 
 #[macro_export]
 macro_rules! register_messages {

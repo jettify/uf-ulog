@@ -1,9 +1,9 @@
-use crate::{Record, Registry, RegistryKey};
+use core::marker::PhantomData;
 
-pub const DEFAULT_MAX_MULTI_IDS: usize = 8;
+use crate::{DefaultCfg, PayloadBuf, Record, Registry, RegistryKey, StreamState, TextBuf, ULogCfg};
 
-pub trait RecordSource<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> {
-    fn try_recv(&mut self) -> Option<Record<MAX_TEXT, MAX_PAYLOAD>>;
+pub trait RecordSource<C: ULogCfg> {
+    fn try_recv(&mut self) -> Option<Record<C>>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,37 +21,21 @@ pub enum ExportError<WriteError> {
     MessageTooLarge,
 }
 
-pub struct ULogExporter<
-    'a,
-    W,
-    Rx,
-    R: RegistryKey,
-    const MAX_TEXT: usize,
-    const MAX_PAYLOAD: usize,
-    const MAX_MULTI_IDS: usize = DEFAULT_MAX_MULTI_IDS,
-    const MAX_STREAMS: usize = 1024,
-> {
+pub struct ULogExporter<'a, W, Rx, R: RegistryKey, C: ULogCfg = DefaultCfg> {
     writer: W,
     rx: Rx,
     registry: &'a Registry<R>,
     started: bool,
-    subscribed: [u8; MAX_STREAMS],
+    subscribed: C::Streams,
+    _cfg: PhantomData<C>,
 }
 
-impl<
-        'a,
-        W,
-        Rx,
-        R,
-        const MAX_TEXT: usize,
-        const MAX_PAYLOAD: usize,
-        const MAX_MULTI_IDS: usize,
-        const MAX_STREAMS: usize,
-    > ULogExporter<'a, W, Rx, R, MAX_TEXT, MAX_PAYLOAD, MAX_MULTI_IDS, MAX_STREAMS>
+impl<'a, W, Rx, R, C> ULogExporter<'a, W, Rx, R, C>
 where
     W: embedded_io::Write,
-    Rx: RecordSource<MAX_TEXT, MAX_PAYLOAD>,
+    Rx: RecordSource<C>,
     R: RegistryKey,
+    C: ULogCfg,
 {
     pub fn new(writer: W, rx: Rx, registry: &'a Registry<R>) -> Self {
         Self {
@@ -59,7 +43,8 @@ where
             rx,
             registry,
             started: false,
-            subscribed: [0; MAX_STREAMS],
+            subscribed: C::Streams::zeroed(),
+            _cfg: PhantomData,
         }
     }
 
@@ -102,7 +87,7 @@ where
 
     pub fn write_record(
         &mut self,
-        record: Record<MAX_TEXT, MAX_PAYLOAD>,
+        record: Record<C>,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         match record {
             Record::LoggedString {
@@ -128,21 +113,21 @@ where
                 if topic_index_usize >= self.registry.len() {
                     return Err(ExportError::InvalidTopicIndex);
                 }
-                if usize::from(instance) >= MAX_MULTI_IDS {
+                if usize::from(instance) >= C::MAX_MULTI_IDS {
                     return Err(ExportError::InvalidMultiId);
                 }
 
                 let slot = self.stream_slot(topic_index_usize, usize::from(instance))?;
                 let msg_id = self.slot_to_msg_id(slot)?;
 
-                if self.subscribed[slot] == 0 {
+                if !self.subscribed.is_subscribed(slot) {
                     let meta = self.registry.entries[topic_index_usize];
                     self.write_add_subscription(instance, msg_id, meta.name)?;
-                    self.subscribed[slot] = 1;
+                    self.subscribed.mark_subscribed(slot);
                 }
 
                 let len = usize::from(payload_len);
-                self.write_data(msg_id, &payload[..len])
+                self.write_data(msg_id, &payload.as_slice()[..len])
             }
         }
     }
@@ -153,12 +138,12 @@ where
         instance: usize,
     ) -> Result<usize, ExportError<<W as embedded_io::ErrorType>::Error>> {
         let Some(slot) = topic_index
-            .checked_mul(MAX_MULTI_IDS)
+            .checked_mul(C::MAX_MULTI_IDS)
             .and_then(|v| v.checked_add(instance))
         else {
             return Err(ExportError::TooManyStreams);
         };
-        if slot >= MAX_STREAMS {
+        if slot >= C::Streams::MAX_STREAMS {
             return Err(ExportError::TooManyStreams);
         }
         Ok(slot)
@@ -317,6 +302,17 @@ mod tests {
     use super::*;
     use crate::{LogLevel, ULogData};
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct TestCfg;
+
+    impl crate::ULogCfg for TestCfg {
+        type Text = heapless::String<32>;
+        type Payload = [u8; 32];
+        type Streams = [u8; 64];
+
+        const MAX_MULTI_IDS: usize = 8;
+    }
+
     #[derive(Default)]
     struct VecSink {
         bytes: std::vec::Vec<u8>,
@@ -339,16 +335,16 @@ mod tests {
 
     struct EmptyRx;
 
-    impl RecordSource<32, 32> for EmptyRx {
-        fn try_recv(&mut self) -> Option<Record<32, 32>> {
+    impl RecordSource<TestCfg> for EmptyRx {
+        fn try_recv(&mut self) -> Option<Record<TestCfg>> {
             None
         }
     }
 
-    struct OneRx(Option<Record<32, 32>>);
+    struct OneRx(Option<Record<TestCfg>>);
 
-    impl RecordSource<32, 32> for OneRx {
-        fn try_recv(&mut self) -> Option<Record<32, 32>> {
+    impl RecordSource<TestCfg> for OneRx {
+        fn try_recv(&mut self) -> Option<Record<TestCfg>> {
             self.0.take()
         }
     }
@@ -384,7 +380,7 @@ mod tests {
             ],
         };
         let rx = OneRx(Some(rec));
-        let mut exporter = ULogExporter::<_, _, _, 32, 32, 8, 64>::new(sink, rx, registry);
+        let mut exporter = ULogExporter::<_, _, _, TestCfg>::new(sink, rx, registry);
 
         exporter.emit_startup(100).unwrap();
         assert_eq!(exporter.poll_once().unwrap(), ExportStep::Progressed);
@@ -403,7 +399,7 @@ mod tests {
             text,
         };
         let rx = OneRx(Some(rec));
-        let mut exporter = ULogExporter::<_, _, _, 32, 32, 8, 64>::new(sink, rx, registry);
+        let mut exporter = ULogExporter::<_, _, _, TestCfg>::new(sink, rx, registry);
 
         exporter.emit_startup(0).unwrap();
         assert_eq!(exporter.poll_once().unwrap(), ExportStep::Progressed);
@@ -414,7 +410,7 @@ mod tests {
         let registry: &'static _ = Box::leak(Box::new(crate::register_messages![]));
         let sink = VecSink::default();
         let rx = EmptyRx;
-        let mut exporter = ULogExporter::<_, _, _, 32, 32, 8, 64>::new(sink, rx, registry);
+        let mut exporter = ULogExporter::<_, _, _, TestCfg>::new(sink, rx, registry);
 
         exporter.emit_startup(0).unwrap();
         assert_eq!(exporter.poll_once().unwrap(), ExportStep::Idle);
