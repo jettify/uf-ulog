@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::{LogLevel, ULogData};
+use crate::{LogLevel, Registry, RegistryKey, TopicIndex, ULogData};
 use heapless::String;
 
 pub trait RecordSink<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> {
@@ -28,7 +28,8 @@ pub enum Record<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> {
         text: String<MAX_TEXT>,
     },
     Data {
-        name: &'static str,
+        topic_index: u16,
+        instance: u8,
         ts: u64,
         payload_len: u16,
         payload: [u8; MAX_PAYLOAD],
@@ -39,21 +40,27 @@ pub const DEFAULT_MAX_TEXT: usize = 128;
 pub const DEFAULT_MAX_PAYLOAD: usize = 256;
 
 pub struct ULogProducer<
+    'a,
     Tx,
+    R: RegistryKey,
     const MAX_TEXT: usize = DEFAULT_MAX_TEXT,
     const MAX_PAYLOAD: usize = DEFAULT_MAX_PAYLOAD,
 > {
     tx: Tx,
+    registry: &'a Registry<R>,
     dropped_total: AtomicU32,
 }
 
-impl<Tx, const MAX_TEXT: usize, const MAX_PAYLOAD: usize> ULogProducer<Tx, MAX_TEXT, MAX_PAYLOAD>
+impl<'a, Tx, R, const MAX_TEXT: usize, const MAX_PAYLOAD: usize>
+    ULogProducer<'a, Tx, R, MAX_TEXT, MAX_PAYLOAD>
 where
     Tx: RecordSink<MAX_TEXT, MAX_PAYLOAD>,
+    R: RegistryKey,
 {
-    pub fn new(tx: Tx) -> Self {
+    pub fn new(tx: Tx, registry: &'a Registry<R>) -> Self {
         Self {
             tx,
+            registry,
             dropped_total: AtomicU32::new(0),
         }
     }
@@ -80,7 +87,36 @@ where
         self.try_emit(record)
     }
 
-    pub fn data<T: ULogData>(&self, value: &T) -> EmitStatus {
+    pub fn data<T>(&self, value: &T) -> EmitStatus
+    where
+        T: ULogData + TopicIndex<R>,
+    {
+        self.data_instance(value, 0)
+    }
+
+    pub fn data_with_topic<T: ULogData>(&self, value: &T, topic_index: u16) -> EmitStatus {
+        self.data_instance_with_topic(value, topic_index, 0)
+    }
+
+    pub fn data_instance<T>(&self, value: &T, instance: u8) -> EmitStatus
+    where
+        T: ULogData + TopicIndex<R>,
+    {
+        let topic_index = <T as TopicIndex<R>>::INDEX;
+        self.data_instance_with_topic(value, topic_index, instance)
+    }
+
+    pub fn data_instance_with_topic<T: ULogData>(
+        &self,
+        value: &T,
+        topic_index: u16,
+        instance: u8,
+    ) -> EmitStatus {
+        if usize::from(topic_index) >= self.registry.len() {
+            self.dropped_total.fetch_add(1, Ordering::Relaxed);
+            return EmitStatus::Dropped;
+        }
+
         let mut payload = [0u8; MAX_PAYLOAD];
         let encoded_len = match value.encode(&mut payload) {
             Ok(encoded_len) => encoded_len,
@@ -102,7 +138,8 @@ where
         }
 
         let record = Record::Data {
-            name: T::NAME,
+            topic_index,
+            instance,
             ts: value.timestamp(),
             payload_len,
             payload,
@@ -206,7 +243,8 @@ mod tests {
     #[test]
     fn logs_and_tracks_drops() {
         let tx = CaptureTx::with_fail_after(1);
-        let producer = ULogProducer::<_, 16, 16>::new(tx);
+        let registry = crate::register_messages![SampleData];
+        let producer = ULogProducer::<_, _, 16, 16>::new(tx, &registry);
 
         assert_eq!(
             producer.log(LogLevel::Info, 42, "boot"),
@@ -222,16 +260,43 @@ mod tests {
     #[test]
     fn encodes_data_event() {
         let tx = CaptureTx::default();
-        let producer = ULogProducer::<_, 16, 16>::new(tx);
+        let registry = crate::register_messages![SampleData];
+        let producer = ULogProducer::<_, _, 16, 16>::new(tx, &registry);
         let sample = SampleData;
 
         assert_eq!(producer.data(&sample), EmitStatus::Emitted);
     }
 
     #[test]
+    fn emits_default_and_explicit_instance() {
+        let tx = CaptureTx::default();
+        let registry = crate::register_messages![SampleData];
+        let producer = ULogProducer::<_, _, 16, 16>::new(tx, &registry);
+        let sample = SampleData;
+
+        assert_eq!(producer.data(&sample), EmitStatus::Emitted);
+        assert_eq!(producer.data_instance(&sample, 3), EmitStatus::Emitted);
+    }
+
+    #[test]
+    fn can_emit_with_preallocated_topic_index() {
+        let tx = CaptureTx::default();
+        let registry = crate::register_messages![SampleData];
+        let producer = ULogProducer::<_, _, 16, 16>::new(tx, &registry);
+        let sample = SampleData;
+
+        assert_eq!(producer.data_with_topic(&sample, 0), EmitStatus::Emitted);
+        assert_eq!(
+            producer.data_instance_with_topic(&sample, 0, 2),
+            EmitStatus::Emitted
+        );
+    }
+
+    #[test]
     fn can_use_default_capacities() {
         let tx: CaptureTx<DEFAULT_MAX_TEXT, DEFAULT_MAX_PAYLOAD> = CaptureTx::default();
-        let producer = ULogProducer::new(tx);
+        let registry = crate::register_messages![SampleData];
+        let producer = ULogProducer::new(tx, &registry);
 
         assert_eq!(
             producer.log(LogLevel::Info, 42, "boot"),

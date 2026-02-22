@@ -10,6 +10,7 @@ publish = true
 
 
 [dependencies]
+embedded-io = "0.6"
 heapless = "0.9.2"
 uf_ulog_macro = { path = "../uf_ulog_macro", optional = true }
 

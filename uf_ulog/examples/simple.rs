@@ -1,8 +1,17 @@
+use std::convert::Infallible;
+use std::sync::mpsc::sync_channel;
+use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::mpsc::{TryRecvError as ChannelTryRecvError, TrySendError as ChannelTrySendError};
+
+use uf_ulog::register_messages;
+use uf_ulog::ExportStep;
 use uf_ulog::LogLevel;
 use uf_ulog::Record;
 use uf_ulog::RecordSink;
+use uf_ulog::RecordSource;
 use uf_ulog::TrySendError;
 use uf_ulog::ULogData;
+use uf_ulog::ULogExporter;
 use uf_ulog::ULogProducer;
 
 #[derive(ULogData, Debug)]
@@ -48,16 +57,68 @@ struct ErrorData {
     code: u16,
 }
 
-pub struct LogsTX {}
+const MAX_TEXT: usize = 64;
+const MAX_PAYLOAD: usize = 128;
 
-impl<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> RecordSink<MAX_TEXT, MAX_PAYLOAD> for LogsTX {
-    fn try_send(&self, item: Record<MAX_TEXT, MAX_PAYLOAD>) -> Result<(), TrySendError> {
-        println!("Sending item: {:?}", &item);
+pub struct LogsTx<const T: usize, const P: usize> {
+    tx: SyncSender<Record<T, P>>,
+}
+
+impl<const T: usize, const P: usize> LogsTx<T, P> {
+    fn new(tx: SyncSender<Record<T, P>>) -> Self {
+        Self { tx }
+    }
+}
+
+impl<const T: usize, const P: usize> RecordSink<T, P> for LogsTx<T, P> {
+    fn try_send(&self, item: Record<T, P>) -> Result<(), TrySendError> {
+        match self.tx.try_send(item) {
+            Ok(()) => Ok(()),
+            Err(ChannelTrySendError::Full(_)) => Err(TrySendError::Full),
+            Err(ChannelTrySendError::Disconnected(_)) => Err(TrySendError::Closed),
+        }
+    }
+}
+
+pub struct LogsRx<const T: usize, const P: usize> {
+    rx: Receiver<Record<T, P>>,
+}
+
+impl<const T: usize, const P: usize> LogsRx<T, P> {
+    fn new(rx: Receiver<Record<T, P>>) -> Self {
+        Self { rx }
+    }
+}
+
+impl<const T: usize, const P: usize> RecordSource<T, P> for LogsRx<T, P> {
+    fn try_recv(&mut self) -> Option<Record<T, P>> {
+        match self.rx.try_recv() {
+            Ok(record) => Some(record),
+            Err(ChannelTryRecvError::Empty) | Err(ChannelTryRecvError::Disconnected) => None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct PrintWriter;
+
+impl embedded_io::ErrorType for PrintWriter {
+    type Error = Infallible;
+}
+
+impl embedded_io::Write for PrintWriter {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        println!("{:?}", buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
 }
 
 fn main() {
+    let registry = register_messages![Gyro, Acc, ErrorData];
     let g = Gyro {
         timestamp: 0,
         x: 1.0,
@@ -76,8 +137,10 @@ fn main() {
         code: ErrorCodes::GenericError.code(),
     };
 
-    let tx = LogsTX {};
-    let ulog = ULogProducer::<_, 64, 128>::new(tx);
+    let (tx, rx) = sync_channel::<Record<MAX_TEXT, MAX_PAYLOAD>>(32);
+
+    let tx = LogsTx::<MAX_TEXT, MAX_PAYLOAD>::new(tx);
+    let ulog = ULogProducer::<_, _, MAX_TEXT, MAX_PAYLOAD>::new(tx, &registry);
 
     ulog.data::<Gyro>(&g);
     ulog.data::<Acc>(&a);
@@ -85,5 +148,18 @@ fn main() {
     ulog.data::<ErrorData>(&err_code);
     ulog.log(LogLevel::Info, 43, "info log");
     ulog.log_tagged(LogLevel::Info, 1, 43, "info log");
+
+    let rx = LogsRx::<MAX_TEXT, MAX_PAYLOAD>::new(rx);
+    let mut exporter =
+        ULogExporter::<_, _, _, MAX_TEXT, MAX_PAYLOAD>::new(PrintWriter, rx, &registry);
+    exporter.emit_startup(0).unwrap();
+
+    loop {
+        match exporter.poll_once().unwrap() {
+            ExportStep::Progressed => {}
+            ExportStep::Idle => break,
+        }
+    }
+
     println!("done")
 }
