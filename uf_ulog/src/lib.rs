@@ -1,4 +1,3 @@
-#![no_std]
 #![allow(
     clippy::needless_doctest_main,
     reason = "This is readme example, not doctest"
@@ -13,6 +12,6 @@ mod ulog;
 
 pub use types::{EncodeError, LogLevel, LoggedString, Subscription, ULogData};
 pub use ulog::{
-    Clock, DEFAULT_MAX_PAYLOAD, DEFAULT_MAX_TEXT, EmitError, Event, TrySend, TrySendError,
-    ULogProducer,
+    EmitStatus, Record, RecordSink, TrySendError, ULogProducer, DEFAULT_MAX_PAYLOAD,
+    DEFAULT_MAX_TEXT,
 };

@@ -5,7 +5,7 @@ default:
 alias b := build
 alias t := test
 alias l := lint
-alias e := eval
+alias e := examples
 
 # Run cargo doc and open result in browser
 [group('build')]
@@ -76,7 +76,7 @@ ci:
   cargo test --all-features
   cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
-# Executes evaluation logic agains BROAD dataset
+# Run examples
 [group('test')]
-eval:
-  @just --justfile examples/broad_score/justfile r
+examples:
+  cargo run -p uf_ulog --example simple

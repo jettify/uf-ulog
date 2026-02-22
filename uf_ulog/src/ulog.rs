@@ -1,14 +1,10 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::{EncodeError, LogLevel, ULogData};
+use crate::{LogLevel, ULogData};
 use heapless::String;
 
-pub trait Clock {
-    fn now_micros(&self) -> u64;
-}
-
-pub trait TrySend<T> {
-    fn try_send(&self, item: T) -> Result<(), TrySendError>;
+pub trait RecordSink<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> {
+    fn try_send(&self, record: Record<MAX_TEXT, MAX_PAYLOAD>) -> Result<(), TrySendError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,16 +14,13 @@ pub enum TrySendError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EmitError {
-    ChannelFull,
-    ChannelClosed,
-    TextTooLong,
-    PayloadTooLarge,
-    Encode(EncodeError),
+pub enum EmitStatus {
+    Emitted,
+    Dropped,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Event<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> {
+pub enum Record<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> {
     LoggedString {
         level: LogLevel,
         tag: Option<u16>,
@@ -47,145 +40,136 @@ pub const DEFAULT_MAX_PAYLOAD: usize = 256;
 
 pub struct ULogProducer<
     Tx,
-    Clk,
     const MAX_TEXT: usize = DEFAULT_MAX_TEXT,
     const MAX_PAYLOAD: usize = DEFAULT_MAX_PAYLOAD,
 > {
     tx: Tx,
-    clock: Clk,
-    truncate_text: bool,
     dropped_total: AtomicU32,
 }
 
-impl<Tx, Clk, const MAX_TEXT: usize, const MAX_PAYLOAD: usize>
-    ULogProducer<Tx, Clk, MAX_TEXT, MAX_PAYLOAD>
+impl<Tx, const MAX_TEXT: usize, const MAX_PAYLOAD: usize> ULogProducer<Tx, MAX_TEXT, MAX_PAYLOAD>
 where
-    Tx: TrySend<Event<MAX_TEXT, MAX_PAYLOAD>>,
-    Clk: Clock,
+    Tx: RecordSink<MAX_TEXT, MAX_PAYLOAD>,
 {
-    pub fn new(tx: Tx, clock: Clk, truncate_text: bool) -> Self {
+    pub fn new(tx: Tx) -> Self {
         Self {
             tx,
-            clock,
-            truncate_text,
             dropped_total: AtomicU32::new(0),
         }
     }
 
-    pub fn try_log(&self, level: LogLevel, msg: &str) -> Result<(), EmitError> {
-        let text = make_text::<MAX_TEXT>(msg, self.truncate_text)?;
-        let event = Event::LoggedString {
+    pub fn log(&self, level: LogLevel, ts: u64, msg: &str) -> EmitStatus {
+        let text = make_text::<MAX_TEXT>(msg);
+        let record = Record::LoggedString {
             level,
             tag: None,
-            ts: self.clock.now_micros(),
+            ts,
             text,
         };
-        self.try_emit(event)
+        self.try_emit(record)
     }
 
-    pub fn try_log_tagged(&self, level: LogLevel, tag: u16, msg: &str) -> Result<(), EmitError> {
-        let text = make_text::<MAX_TEXT>(msg, self.truncate_text)?;
-        let event = Event::LoggedString {
+    pub fn log_tagged(&self, level: LogLevel, tag: u16, ts: u64, msg: &str) -> EmitStatus {
+        let text = make_text::<MAX_TEXT>(msg);
+        let record = Record::LoggedString {
             level,
             tag: Some(tag),
-            ts: self.clock.now_micros(),
+            ts,
             text,
         };
-        self.try_emit(event)
+        self.try_emit(record)
     }
 
-    pub fn try_data<T: ULogData>(&self, value: &T) -> Result<(), EmitError> {
+    pub fn data<T: ULogData>(&self, value: &T) -> EmitStatus {
         let mut payload = [0u8; MAX_PAYLOAD];
-        let encoded_len = value.encode(&mut payload).map_err(EmitError::Encode)?;
-        let payload_len = u16::try_from(encoded_len).map_err(|_| EmitError::PayloadTooLarge)?;
+        let encoded_len = match value.encode(&mut payload) {
+            Ok(encoded_len) => encoded_len,
+            Err(_) => {
+                self.dropped_total.fetch_add(1, Ordering::Relaxed);
+                return EmitStatus::Dropped;
+            }
+        };
+        let payload_len = match u16::try_from(encoded_len) {
+            Ok(payload_len) => payload_len,
+            Err(_) => {
+                self.dropped_total.fetch_add(1, Ordering::Relaxed);
+                return EmitStatus::Dropped;
+            }
+        };
         if usize::from(payload_len) > MAX_PAYLOAD {
-            return Err(EmitError::PayloadTooLarge);
+            self.dropped_total.fetch_add(1, Ordering::Relaxed);
+            return EmitStatus::Dropped;
         }
 
-        let event = Event::Data {
+        let record = Record::Data {
             name: T::NAME,
             ts: value.timestamp(),
             payload_len,
             payload,
         };
 
-        self.try_emit(event)
+        self.try_emit(record)
     }
 
     pub fn dropped_count(&self) -> u32 {
         self.dropped_total.load(Ordering::Relaxed)
     }
 
-    fn try_emit(&self, event: Event<MAX_TEXT, MAX_PAYLOAD>) -> Result<(), EmitError> {
-        self.tx.try_send(event).map_err(|err| match err {
-            TrySendError::Full => {
+    fn try_emit(&self, record: Record<MAX_TEXT, MAX_PAYLOAD>) -> EmitStatus {
+        match self.tx.try_send(record) {
+            Ok(()) => EmitStatus::Emitted,
+            Err(TrySendError::Full | TrySendError::Closed) => {
                 self.dropped_total.fetch_add(1, Ordering::Relaxed);
-                EmitError::ChannelFull
+                EmitStatus::Dropped
             }
-            TrySendError::Closed => EmitError::ChannelClosed,
-        })
+        }
     }
 }
 
-fn make_text<const MAX_TEXT: usize>(
-    msg: &str,
-    truncate: bool,
-) -> Result<String<MAX_TEXT>, EmitError> {
+fn make_text<const MAX_TEXT: usize>(msg: &str) -> String<MAX_TEXT> {
+    debug_assert!(msg.is_ascii());
     let mut text = String::<MAX_TEXT>::new();
-
-    for ch in msg.chars() {
-        if text.push(ch).is_err() {
-            if truncate {
-                break;
-            }
-            return Err(EmitError::TextTooLong);
-        }
-    }
-
-    Ok(text)
+    let end = core::cmp::min(msg.len(), MAX_TEXT);
+    let _ = text.push_str(&msg[..end]);
+    text
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::EncodeError;
     use core::cell::RefCell;
 
-    struct FixedClock;
-
-    impl Clock for FixedClock {
-        fn now_micros(&self) -> u64 {
-            42
-        }
-    }
-
-    struct CaptureTx<T> {
-        events: RefCell<[Option<T>; 4]>,
+    struct CaptureTx<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> {
+        records: RefCell<[Option<Record<MAX_TEXT, MAX_PAYLOAD>>; 4]>,
         idx: RefCell<usize>,
         fail_after: Option<usize>,
     }
 
-    impl<T> Default for CaptureTx<T> {
+    impl<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> Default for CaptureTx<MAX_TEXT, MAX_PAYLOAD> {
         fn default() -> Self {
             Self {
-                events: RefCell::new([None, None, None, None]),
+                records: RefCell::new([None, None, None, None]),
                 idx: RefCell::new(0),
                 fail_after: None,
             }
         }
     }
 
-    impl<T> CaptureTx<T> {
+    impl<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> CaptureTx<MAX_TEXT, MAX_PAYLOAD> {
         fn with_fail_after(fail_after: usize) -> Self {
             Self {
-                events: RefCell::new([None, None, None, None]),
+                records: RefCell::new([None, None, None, None]),
                 idx: RefCell::new(0),
                 fail_after: Some(fail_after),
             }
         }
     }
 
-    impl<T> TrySend<T> for CaptureTx<T> {
-        fn try_send(&self, item: T) -> Result<(), TrySendError> {
+    impl<const MAX_TEXT: usize, const MAX_PAYLOAD: usize> RecordSink<MAX_TEXT, MAX_PAYLOAD>
+        for CaptureTx<MAX_TEXT, MAX_PAYLOAD>
+    {
+        fn try_send(&self, item: Record<MAX_TEXT, MAX_PAYLOAD>) -> Result<(), TrySendError> {
             let i = *self.idx.borrow();
             if self.fail_after.is_some_and(|n| i >= n) {
                 return Err(TrySendError::Full);
@@ -193,7 +177,7 @@ mod tests {
             if i >= 4 {
                 return Err(TrySendError::Closed);
             }
-            self.events.borrow_mut()[i] = Some(item);
+            self.records.borrow_mut()[i] = Some(item);
             *self.idx.borrow_mut() = i + 1;
             Ok(())
         }
@@ -222,12 +206,15 @@ mod tests {
     #[test]
     fn logs_and_tracks_drops() {
         let tx = CaptureTx::with_fail_after(1);
-        let producer = ULogProducer::<_, _, 16, 16>::new(tx, FixedClock, true);
+        let producer = ULogProducer::<_, 16, 16>::new(tx);
 
-        assert!(producer.try_log(LogLevel::Info, "boot").is_ok());
         assert_eq!(
-            producer.try_log(LogLevel::Info, "next"),
-            Err(EmitError::ChannelFull)
+            producer.log(LogLevel::Info, 42, "boot"),
+            EmitStatus::Emitted
+        );
+        assert_eq!(
+            producer.log(LogLevel::Info, 43, "next"),
+            EmitStatus::Dropped
         );
         assert_eq!(producer.dropped_count(), 1);
     }
@@ -235,17 +222,20 @@ mod tests {
     #[test]
     fn encodes_data_event() {
         let tx = CaptureTx::default();
-        let producer = ULogProducer::<_, _, 16, 16>::new(tx, FixedClock, true);
+        let producer = ULogProducer::<_, 16, 16>::new(tx);
         let sample = SampleData;
 
-        assert!(producer.try_data(&sample).is_ok());
+        assert_eq!(producer.data(&sample), EmitStatus::Emitted);
     }
 
     #[test]
     fn can_use_default_capacities() {
-        let tx = CaptureTx::default();
-        let producer = ULogProducer::new(tx, FixedClock, true);
+        let tx: CaptureTx<DEFAULT_MAX_TEXT, DEFAULT_MAX_PAYLOAD> = CaptureTx::default();
+        let producer = ULogProducer::new(tx);
 
-        assert!(producer.try_log(LogLevel::Info, "boot").is_ok());
+        assert_eq!(
+            producer.log(LogLevel::Info, 42, "boot"),
+            EmitStatus::Emitted
+        );
     }
 }
