@@ -40,8 +40,8 @@ impl ErrorCodes {
 
     pub const fn message(&self) -> &'static str {
         match self {
-            Self::GenericError => "GenericError",
             Self::GyroError => "GyroError",
+            Self::GenericError => "GenericError",
             Self::AccError => "AccError",
         }
     }
@@ -83,7 +83,13 @@ impl embedded_io::Write for PrintWriter {
 }
 
 fn main() {
-    let registry = register_messages![Gyro, Acc, ErrorData];
+    register_messages! {
+        enum UlogDataMessages {
+            Gyro,
+            Acc,
+            ErrorData,
+        }
+    }
     let g = Gyro {
         timestamp: 0,
         x: 1.0,
@@ -103,7 +109,7 @@ fn main() {
     };
 
     let (tx, rx) = adapters::std::channel::<ExampleCfg>(32);
-    let mut ulog = ULogProducer::<_, _, ExampleCfg>::new(tx, &registry);
+    let mut ulog = ULogProducer::<_, UlogDataMessages, ExampleCfg>::new(tx);
 
     ulog.data::<Gyro>(&g);
     ulog.data::<Acc>(&a);
@@ -112,7 +118,7 @@ fn main() {
     ulog.log(LogLevel::Info, 43, "info log");
     ulog.log_tagged(LogLevel::Info, 1, 43, "info log");
 
-    let mut exporter = ULogExporter::<_, _, _, ExampleCfg>::new(PrintWriter, rx, &registry);
+    let mut exporter = ULogExporter::<_, _, UlogDataMessages, ExampleCfg>::new(PrintWriter, rx);
     exporter.emit_startup(0).unwrap();
 
     loop {

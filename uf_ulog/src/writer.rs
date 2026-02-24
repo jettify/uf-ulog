@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use crate::{DefaultCfg, PayloadBuf, Record, Registry, RegistryKey, StreamState, TextBuf, ULogCfg};
+use crate::{DefaultCfg, MessageSet, PayloadBuf, Record, StreamState, TextBuf, ULogCfg};
 
 pub trait RecordSource<C: ULogCfg> {
     fn try_recv(&mut self) -> Option<Record<C>>;
@@ -21,30 +21,28 @@ pub enum ExportError<WriteError> {
     MessageTooLarge,
 }
 
-pub struct ULogExporter<'a, W, Rx, R: RegistryKey, C: ULogCfg = DefaultCfg> {
+pub struct ULogExporter<W, Rx, R: MessageSet, C: ULogCfg = DefaultCfg> {
     writer: W,
     rx: Rx,
-    registry: &'a Registry<R>,
     started: bool,
     subscribed: C::Streams,
-    _cfg: PhantomData<C>,
+    _messages: PhantomData<R>,
 }
 
-impl<'a, W, Rx, R, C> ULogExporter<'a, W, Rx, R, C>
+impl<W, Rx, R, C> ULogExporter<W, Rx, R, C>
 where
     W: embedded_io::Write,
     Rx: RecordSource<C>,
-    R: RegistryKey,
+    R: MessageSet,
     C: ULogCfg,
 {
-    pub fn new(writer: W, rx: Rx, registry: &'a Registry<R>) -> Self {
+    pub fn new(writer: W, rx: Rx) -> Self {
         Self {
             writer,
             rx,
-            registry,
             started: false,
             subscribed: C::Streams::zeroed(),
-            _cfg: PhantomData,
+            _messages: PhantomData,
         }
     }
 
@@ -62,7 +60,7 @@ where
 
         self.write_header(timestamp_micros)?;
         self.write_flag_bits()?;
-        for meta in self.registry.entries {
+        for meta in R::REGISTRY.entries {
             self.write_format(meta.name, meta.format)?;
         }
 
@@ -110,18 +108,16 @@ where
                 payload,
             } => {
                 let topic_index_usize = usize::from(topic_index);
-                if topic_index_usize >= self.registry.len() {
-                    return Err(ExportError::InvalidTopicIndex);
-                }
                 if usize::from(instance) >= C::MAX_MULTI_IDS {
                     return Err(ExportError::InvalidMultiId);
                 }
 
+                let meta = self.registry_entry(topic_index_usize)?;
+
                 let slot = self.stream_slot(topic_index_usize, usize::from(instance))?;
-                let msg_id = self.slot_to_msg_id(slot)?;
+                let msg_id = self.slot_msg_id(slot)?;
 
                 if !self.subscribed.is_subscribed(slot) {
-                    let meta = self.registry.entries[topic_index_usize];
                     self.write_add_subscription(instance, msg_id, meta.name)?;
                     self.subscribed.mark_subscribed(slot);
                 }
@@ -130,6 +126,16 @@ where
                 self.write_data(msg_id, &payload.as_slice()[..len])
             }
         }
+    }
+
+    fn registry_entry(
+        &self,
+        topic_index: usize,
+    ) -> Result<&'static crate::MessageMeta, ExportError<<W as embedded_io::ErrorType>::Error>>
+    {
+        R::REGISTRY
+            .get(topic_index)
+            .ok_or(ExportError::InvalidTopicIndex)
     }
 
     fn stream_slot(
@@ -149,11 +155,26 @@ where
         Ok(slot)
     }
 
-    fn slot_to_msg_id(
+    fn slot_msg_id(
         &self,
         slot: usize,
     ) -> Result<u16, ExportError<<W as embedded_io::ErrorType>::Error>> {
         u16::try_from(slot).map_err(|_| ExportError::TooManyStreams)
+    }
+
+    fn checked_total_len(
+        &self,
+        base: usize,
+        extra: usize,
+        capacity: usize,
+    ) -> Result<usize, ExportError<<W as embedded_io::ErrorType>::Error>> {
+        let total_len = base
+            .checked_add(extra)
+            .ok_or(ExportError::MessageTooLarge)?;
+        if total_len > capacity {
+            return Err(ExportError::MessageTooLarge);
+        }
+        Ok(total_len)
     }
 
     fn write_header(
@@ -180,18 +201,12 @@ where
         let mut payload = [0u8; 512];
         let name_bytes = name.as_bytes();
         let format_bytes = format.as_bytes();
-        let total_len = name_bytes
-            .len()
-            .checked_add(1)
-            .and_then(|v| v.checked_add(format_bytes.len()))
-            .ok_or(ExportError::MessageTooLarge)?;
-        if total_len > payload.len() {
-            return Err(ExportError::MessageTooLarge);
-        }
+        let format_offset = self.checked_total_len(name_bytes.len(), 1, payload.len())?;
+        let total_len = self.checked_total_len(format_offset, format_bytes.len(), payload.len())?;
 
         payload[..name_bytes.len()].copy_from_slice(name_bytes);
         payload[name_bytes.len()] = b':';
-        payload[name_bytes.len() + 1..total_len].copy_from_slice(format_bytes);
+        payload[format_offset..total_len].copy_from_slice(format_bytes);
         self.write_message(b'F', &payload[..total_len])
     }
 
@@ -203,12 +218,7 @@ where
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         let name_bytes = name.as_bytes();
         let mut payload = [0u8; 256];
-        let total_len = 3usize
-            .checked_add(name_bytes.len())
-            .ok_or(ExportError::MessageTooLarge)?;
-        if total_len > payload.len() {
-            return Err(ExportError::MessageTooLarge);
-        }
+        let total_len = self.checked_total_len(3, name_bytes.len(), payload.len())?;
 
         payload[0] = multi_id;
         payload[1..3].copy_from_slice(&msg_id.to_le_bytes());
@@ -222,12 +232,7 @@ where
         data: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         let mut payload = [0u8; 1024];
-        let total_len = 2usize
-            .checked_add(data.len())
-            .ok_or(ExportError::MessageTooLarge)?;
-        if total_len > payload.len() {
-            return Err(ExportError::MessageTooLarge);
-        }
+        let total_len = self.checked_total_len(2, data.len(), payload.len())?;
 
         payload[0..2].copy_from_slice(&msg_id.to_le_bytes());
         payload[2..total_len].copy_from_slice(data);
@@ -241,12 +246,7 @@ where
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         let mut payload = [0u8; 512];
-        let total_len = 9usize
-            .checked_add(text.len())
-            .ok_or(ExportError::MessageTooLarge)?;
-        if total_len > payload.len() {
-            return Err(ExportError::MessageTooLarge);
-        }
+        let total_len = self.checked_total_len(9, text.len(), payload.len())?;
 
         payload[0] = level;
         payload[1..9].copy_from_slice(&timestamp.to_le_bytes());
@@ -262,12 +262,7 @@ where
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         let mut payload = [0u8; 512];
-        let total_len = 11usize
-            .checked_add(text.len())
-            .ok_or(ExportError::MessageTooLarge)?;
-        if total_len > payload.len() {
-            return Err(ExportError::MessageTooLarge);
-        }
+        let total_len = self.checked_total_len(11, text.len(), payload.len())?;
 
         payload[0] = level;
         payload[1..3].copy_from_slice(&tag.to_le_bytes());
@@ -302,17 +297,6 @@ mod tests {
     use super::*;
     use crate::{LogLevel, ULogData};
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct TestCfg;
-
-    impl crate::ULogCfg for TestCfg {
-        type Text = heapless::String<32>;
-        type Payload = [u8; 32];
-        type Streams = [u8; 64];
-
-        const MAX_MULTI_IDS: usize = 8;
-    }
-
     #[derive(Default)]
     struct VecSink {
         bytes: std::vec::Vec<u8>,
@@ -334,6 +318,17 @@ mod tests {
     }
 
     struct EmptyRx;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct TestCfg;
+
+    impl crate::ULogCfg for TestCfg {
+        type Text = heapless::String<32>;
+        type Payload = [u8; 32];
+        type Streams = [u8; 64];
+
+        const MAX_MULTI_IDS: usize = 8;
+    }
 
     impl RecordSource<TestCfg> for EmptyRx {
         fn try_recv(&mut self) -> Option<Record<TestCfg>> {
@@ -367,7 +362,11 @@ mod tests {
 
     #[test]
     fn startup_and_data_subscription() {
-        let registry: &'static _ = Box::leak(Box::new(crate::register_messages![Sample]));
+        crate::register_messages! {
+            enum TestMessages {
+                Sample,
+            }
+        }
         let sink = VecSink::default();
         let rec = Record::Data {
             topic_index: 0,
@@ -380,7 +379,7 @@ mod tests {
             ],
         };
         let rx = OneRx(Some(rec));
-        let mut exporter = ULogExporter::<_, _, _, TestCfg>::new(sink, rx, registry);
+        let mut exporter = ULogExporter::<_, _, TestMessages, TestCfg>::new(sink, rx);
 
         exporter.emit_startup(100).unwrap();
         assert_eq!(exporter.poll_once().unwrap(), ExportStep::Progressed);
@@ -388,7 +387,9 @@ mod tests {
 
     #[test]
     fn logs_string() {
-        let registry: &'static _ = Box::leak(Box::new(crate::register_messages![]));
+        crate::register_messages! {
+            enum TestMessages {}
+        }
         let sink = VecSink::default();
         let mut text = heapless::String::<32>::new();
         let _ = text.push_str("boot");
@@ -399,7 +400,7 @@ mod tests {
             text,
         };
         let rx = OneRx(Some(rec));
-        let mut exporter = ULogExporter::<_, _, _, TestCfg>::new(sink, rx, registry);
+        let mut exporter = ULogExporter::<_, _, TestMessages, TestCfg>::new(sink, rx);
 
         exporter.emit_startup(0).unwrap();
         assert_eq!(exporter.poll_once().unwrap(), ExportStep::Progressed);
@@ -407,10 +408,12 @@ mod tests {
 
     #[test]
     fn idle_without_record() {
-        let registry: &'static _ = Box::leak(Box::new(crate::register_messages![]));
+        crate::register_messages! {
+            enum TestMessages {}
+        }
         let sink = VecSink::default();
         let rx = EmptyRx;
-        let mut exporter = ULogExporter::<_, _, _, TestCfg>::new(sink, rx, registry);
+        let mut exporter = ULogExporter::<_, _, TestMessages, TestCfg>::new(sink, rx);
 
         exporter.emit_startup(0).unwrap();
         assert_eq!(exporter.poll_once().unwrap(), ExportStep::Idle);

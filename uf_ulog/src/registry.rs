@@ -1,5 +1,3 @@
-use core::marker::PhantomData;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessageMeta {
     pub name: &'static str,
@@ -7,19 +5,20 @@ pub struct MessageMeta {
     pub wire_size: usize,
 }
 
-pub trait RegistryKey {}
+pub trait MessageSet: Sized {
+    const REGISTRY: Registry;
+}
 
-pub trait TopicIndex<R: RegistryKey> {
+pub trait TopicIndex<R: MessageSet> {
     const INDEX: u16;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Registry<R: RegistryKey> {
+pub struct Registry {
     pub entries: &'static [MessageMeta],
-    marker: PhantomData<fn() -> R>,
 }
 
-impl<R: RegistryKey> Registry<R> {
+impl Registry {
     pub const fn new(entries: &'static [MessageMeta]) -> Self {
         let mut i = 0;
         while i < entries.len() {
@@ -32,10 +31,7 @@ impl<R: RegistryKey> Registry<R> {
             }
             i += 1;
         }
-        Self {
-            entries,
-            marker: PhantomData,
-        }
+        Self { entries }
     }
 
     pub const fn len(&self) -> usize {
@@ -70,4 +66,38 @@ const fn str_eq(a: &str, b: &str) -> bool {
         i += 1;
     }
     true
+}
+
+#[macro_export]
+macro_rules! register_messages {
+    ($vis:vis enum $name:ident { $($ty:ty),* $(,)? }) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        $vis enum $name {}
+
+        $crate::__register_messages_impl_topic_index!($name, 0u16; $($ty),*);
+
+        impl $crate::MessageSet for $name {
+            const REGISTRY: $crate::Registry = $crate::Registry::new(&[
+                $(
+                    $crate::MessageMeta {
+                        name: <$ty as $crate::ULogData>::NAME,
+                        format: <$ty as $crate::ULogData>::FORMAT,
+                        wire_size: <$ty as $crate::ULogData>::WIRE_SIZE,
+                    }
+                ),*
+            ]);
+        }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __register_messages_impl_topic_index {
+    ($key:ty, $idx:expr; $head:ty $(, $tail:ty)*) => {
+        impl $crate::TopicIndex<$key> for $head {
+            const INDEX: u16 = $idx;
+        }
+        $crate::__register_messages_impl_topic_index!($key, ($idx + 1u16); $($tail),*);
+    };
+    ($key:ty, $idx:expr;) => {};
 }

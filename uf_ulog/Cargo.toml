@@ -11,10 +11,25 @@ publish = true
 
 [dependencies]
 embedded-io = "0.6"
+embedded-io-async = { version = "0.6", optional = true }
+embassy-sync = { version = "0.7", optional = true }
 heapless = "0.9.2"
 uf_ulog_macro = { path = "../uf_ulog_macro", optional = true }
 
 [features]
 default = ["derive"]
 derive = ["dep:uf_ulog_macro"]
+async = ["dep:embedded-io-async"]
+embassy = ["async", "dep:embassy-sync"]
 std = []
+
+[dev-dependencies]
+futures = "0.3"
+
+[[example]]
+name = "simple"
+required-features = ["std"]
+
+[[example]]
+name = "embassy"
+required-features = ["std", "async", "embassy"]

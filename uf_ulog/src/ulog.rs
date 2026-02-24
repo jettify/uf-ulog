@@ -1,9 +1,7 @@
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::{
-    DefaultCfg, LogLevel, PayloadBuf, Registry, RegistryKey, TextBuf, TopicIndex, ULogCfg, ULogData,
-};
+use crate::{DefaultCfg, LogLevel, MessageSet, PayloadBuf, TextBuf, TopicIndex, ULogCfg, ULogData};
 
 pub trait RecordSink<C: ULogCfg> {
     fn try_send(&mut self, record: Record<C>) -> Result<(), TrySendError>;
@@ -38,25 +36,25 @@ pub enum Record<C: ULogCfg> {
     },
 }
 
-pub struct ULogProducer<'a, Tx, R: RegistryKey, C: ULogCfg = DefaultCfg> {
+pub struct ULogProducer<Tx, R: MessageSet, C: ULogCfg = DefaultCfg> {
     tx: Tx,
-    registry: &'a Registry<R>,
     dropped_total: AtomicU32,
     _cfg: PhantomData<C>,
+    _messages: PhantomData<R>,
 }
 
-impl<'a, Tx, R, C> ULogProducer<'a, Tx, R, C>
+impl<Tx, R, C> ULogProducer<Tx, R, C>
 where
     Tx: RecordSink<C>,
-    R: RegistryKey,
+    R: MessageSet,
     C: ULogCfg,
 {
-    pub fn new(tx: Tx, registry: &'a Registry<R>) -> Self {
+    pub fn new(tx: Tx) -> Self {
         Self {
             tx,
-            registry,
             dropped_total: AtomicU32::new(0),
             _cfg: PhantomData,
+            _messages: PhantomData,
         }
     }
 
@@ -94,7 +92,7 @@ where
         T: ULogData + TopicIndex<R>,
     {
         let topic_index = <T as TopicIndex<R>>::INDEX;
-        if usize::from(topic_index) >= self.registry.len() {
+        if usize::from(topic_index) >= R::REGISTRY.len() {
             self.dropped_total.fetch_add(1, Ordering::Relaxed);
             return EmitStatus::Dropped;
         }
@@ -234,8 +232,12 @@ mod tests {
     #[test]
     fn logs_and_tracks_drops() {
         let tx = CaptureTx::<SmallCfg>::with_fail_after(1);
-        let registry = crate::register_messages![SampleData];
-        let mut producer = ULogProducer::<_, _, SmallCfg>::new(tx, &registry);
+        crate::register_messages! {
+            enum TestMessages {
+                SampleData,
+            }
+        }
+        let mut producer = ULogProducer::<_, TestMessages, SmallCfg>::new(tx);
 
         assert_eq!(
             producer.log(LogLevel::Info, 42, "boot"),
@@ -251,8 +253,12 @@ mod tests {
     #[test]
     fn encodes_data_event() {
         let tx = CaptureTx::<SmallCfg>::default();
-        let registry = crate::register_messages![SampleData];
-        let mut producer = ULogProducer::<_, _, SmallCfg>::new(tx, &registry);
+        crate::register_messages! {
+            enum TestMessages {
+                SampleData,
+            }
+        }
+        let mut producer = ULogProducer::<_, TestMessages, SmallCfg>::new(tx);
         let sample = SampleData;
 
         assert_eq!(producer.data(&sample), EmitStatus::Emitted);
@@ -261,8 +267,12 @@ mod tests {
     #[test]
     fn emits_default_and_explicit_instance() {
         let tx = CaptureTx::<SmallCfg>::default();
-        let registry = crate::register_messages![SampleData];
-        let mut producer = ULogProducer::<_, _, SmallCfg>::new(tx, &registry);
+        crate::register_messages! {
+            enum TestMessages {
+                SampleData,
+            }
+        }
+        let mut producer = ULogProducer::<_, TestMessages, SmallCfg>::new(tx);
         let sample = SampleData;
 
         assert_eq!(producer.data(&sample), EmitStatus::Emitted);
@@ -272,8 +282,12 @@ mod tests {
     #[test]
     fn can_use_default_config() {
         let tx: CaptureTx<crate::DefaultCfg> = CaptureTx::default();
-        let registry = crate::register_messages![SampleData];
-        let mut producer = ULogProducer::new(tx, &registry);
+        crate::register_messages! {
+            enum TestMessages {
+                SampleData,
+            }
+        }
+        let mut producer = ULogProducer::<_, TestMessages>::new(tx);
 
         assert_eq!(
             producer.log(LogLevel::Info, 42, "boot"),
