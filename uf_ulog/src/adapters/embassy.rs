@@ -41,5 +41,8 @@ impl<'a, M: RawMutex, const N: usize, C: ULogCfg> AsyncRecordSource<C> for Chann
 pub fn bind<'a, M: RawMutex, const N: usize, C: ULogCfg>(
     channel: &'a Channel<M, Record<C>, N>,
 ) -> (ChannelTx<'a, M, N, C>, ChannelRx<'a, M, N, C>) {
-    (ChannelTx::new(channel.sender()), ChannelRx::new(channel.receiver()))
+    (
+        ChannelTx::new(channel.sender()),
+        ChannelRx::new(channel.receiver()),
+    )
 }

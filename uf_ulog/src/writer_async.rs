@@ -1,7 +1,9 @@
 use core::marker::PhantomData;
 
-use crate::writer::{ExportError, ExportStep};
-use crate::{DefaultCfg, MessageSet, PayloadBuf, Record, StreamState, TextBuf, ULogCfg};
+use crate::writer_common;
+use crate::{
+    DefaultCfg, ExportError, ExportStep, MessageSet, Record, StreamState, TextBuf, ULogCfg,
+};
 
 #[allow(async_fn_in_trait)]
 pub trait AsyncRecordSource<C: ULogCfg> {
@@ -103,60 +105,42 @@ where
                 payload,
             } => {
                 let topic_index_usize = usize::from(topic_index);
-                if topic_index_usize >= R::REGISTRY.len() {
-                    return Err(ExportError::InvalidTopicIndex);
-                }
                 if usize::from(instance) >= C::MAX_MULTI_IDS {
                     return Err(ExportError::InvalidMultiId);
                 }
 
-                let slot = self.stream_slot(topic_index_usize, usize::from(instance))?;
-                let msg_id = self.slot_to_msg_id(slot)?;
+                let meta = writer_common::registry_entry::<
+                    R,
+                    <W as embedded_io_async::ErrorType>::Error,
+                >(topic_index_usize)?;
+
+                let slot = writer_common::stream_slot::<
+                    C,
+                    <W as embedded_io_async::ErrorType>::Error,
+                >(topic_index_usize, usize::from(instance))?;
+                let msg_id =
+                    writer_common::slot_msg_id::<<W as embedded_io_async::ErrorType>::Error>(slot)?;
 
                 if !self.subscribed.is_subscribed(slot) {
-                    let meta = R::REGISTRY.entries[topic_index_usize];
-                    self.write_add_subscription(instance, msg_id, meta.name).await?;
+                    self.write_add_subscription(instance, msg_id, meta.name)
+                        .await?;
                     self.subscribed.mark_subscribed(slot);
                 }
 
-                let len = usize::from(payload_len);
-                self.write_data(msg_id, &payload.as_slice()[..len]).await
+                let data = writer_common::payload_with_len::<
+                    C,
+                    <W as embedded_io_async::ErrorType>::Error,
+                >(&payload, payload_len)?;
+                self.write_data(msg_id, data).await
             }
         }
-    }
-
-    fn stream_slot(
-        &self,
-        topic_index: usize,
-        instance: usize,
-    ) -> Result<usize, ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let Some(slot) = topic_index
-            .checked_mul(C::MAX_MULTI_IDS)
-            .and_then(|v| v.checked_add(instance))
-        else {
-            return Err(ExportError::TooManyStreams);
-        };
-        if slot >= C::Streams::MAX_STREAMS {
-            return Err(ExportError::TooManyStreams);
-        }
-        Ok(slot)
-    }
-
-    fn slot_to_msg_id(
-        &self,
-        slot: usize,
-    ) -> Result<u16, ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        u16::try_from(slot).map_err(|_| ExportError::TooManyStreams)
     }
 
     async fn write_header(
         &mut self,
         timestamp_micros: u64,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let mut header = [0u8; 16];
-        header[..7].copy_from_slice(&[0x55, 0x4c, 0x6f, 0x67, 0x01, 0x12, 0x35]);
-        header[7] = 0x01;
-        header[8..16].copy_from_slice(&timestamp_micros.to_le_bytes());
+        let header = writer_common::write_header(timestamp_micros);
         self.write_all(&header).await
     }
 
@@ -173,20 +157,7 @@ where
         format: &str,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
         let mut payload = [0u8; 512];
-        let name_bytes = name.as_bytes();
-        let format_bytes = format.as_bytes();
-        let total_len = name_bytes
-            .len()
-            .checked_add(1)
-            .and_then(|v| v.checked_add(format_bytes.len()))
-            .ok_or(ExportError::MessageTooLarge)?;
-        if total_len > payload.len() {
-            return Err(ExportError::MessageTooLarge);
-        }
-
-        payload[..name_bytes.len()].copy_from_slice(name_bytes);
-        payload[name_bytes.len()] = b':';
-        payload[name_bytes.len() + 1..total_len].copy_from_slice(format_bytes);
+        let total_len = writer_common::format_payload(&mut payload, name, format)?;
         self.write_message(b'F', &payload[..total_len]).await
     }
 
@@ -196,18 +167,9 @@ where
         msg_id: u16,
         name: &str,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let name_bytes = name.as_bytes();
         let mut payload = [0u8; 256];
-        let total_len = 3usize
-            .checked_add(name_bytes.len())
-            .ok_or(ExportError::MessageTooLarge)?;
-        if total_len > payload.len() {
-            return Err(ExportError::MessageTooLarge);
-        }
-
-        payload[0] = multi_id;
-        payload[1..3].copy_from_slice(&msg_id.to_le_bytes());
-        payload[3..total_len].copy_from_slice(name_bytes);
+        let total_len =
+            writer_common::add_subscription_payload(&mut payload, multi_id, msg_id, name)?;
         self.write_message(b'A', &payload[..total_len]).await
     }
 
@@ -217,15 +179,7 @@ where
         data: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
         let mut payload = [0u8; 1024];
-        let total_len = 2usize
-            .checked_add(data.len())
-            .ok_or(ExportError::MessageTooLarge)?;
-        if total_len > payload.len() {
-            return Err(ExportError::MessageTooLarge);
-        }
-
-        payload[0..2].copy_from_slice(&msg_id.to_le_bytes());
-        payload[2..total_len].copy_from_slice(data);
+        let total_len = writer_common::data_payload(&mut payload, msg_id, data)?;
         self.write_message(b'D', &payload[..total_len]).await
     }
 
@@ -236,16 +190,7 @@ where
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
         let mut payload = [0u8; 512];
-        let total_len = 9usize
-            .checked_add(text.len())
-            .ok_or(ExportError::MessageTooLarge)?;
-        if total_len > payload.len() {
-            return Err(ExportError::MessageTooLarge);
-        }
-
-        payload[0] = level;
-        payload[1..9].copy_from_slice(&timestamp.to_le_bytes());
-        payload[9..total_len].copy_from_slice(text);
+        let total_len = writer_common::log_payload(&mut payload, level, timestamp, text)?;
         self.write_message(b'L', &payload[..total_len]).await
     }
 
@@ -257,17 +202,8 @@ where
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
         let mut payload = [0u8; 512];
-        let total_len = 11usize
-            .checked_add(text.len())
-            .ok_or(ExportError::MessageTooLarge)?;
-        if total_len > payload.len() {
-            return Err(ExportError::MessageTooLarge);
-        }
-
-        payload[0] = level;
-        payload[1..3].copy_from_slice(&tag.to_le_bytes());
-        payload[3..11].copy_from_slice(&timestamp.to_le_bytes());
-        payload[11..total_len].copy_from_slice(text);
+        let total_len =
+            writer_common::tagged_log_payload(&mut payload, level, tag, timestamp, text)?;
         self.write_message(b'C', &payload[..total_len]).await
     }
 
@@ -276,10 +212,7 @@ where
         msg_type: u8,
         payload: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let size = u16::try_from(payload.len()).map_err(|_| ExportError::MessageTooLarge)?;
-        let mut header = [0u8; 3];
-        header[0..2].copy_from_slice(&size.to_le_bytes());
-        header[2] = msg_type;
+        let header = writer_common::message_header(payload.len(), msg_type)?;
         self.write_all(&header).await?;
         self.write_all(payload).await
     }
@@ -288,6 +221,9 @@ where
         &mut self,
         bytes: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        self.writer.write_all(bytes).await.map_err(ExportError::Write)
+        self.writer
+            .write_all(bytes)
+            .await
+            .map_err(ExportError::Write)
     }
 }

@@ -97,7 +97,8 @@ async fn async_main() {
     producer_a.log_tagged(LogLevel::Warning, 7, 102, "producer_a warn");
     producer_b.log_tagged(LogLevel::Err, 9, 103, "producer_b error");
 
-    let mut exporter = ULogAsyncExporter::<_, _, UlogDataMessages, ExampleCfg>::new(PrintWriter, rx);
+    let mut exporter =
+        ULogAsyncExporter::<_, _, UlogDataMessages, ExampleCfg>::new(PrintWriter, rx);
     exporter.emit_startup(0).await.unwrap();
 
     for _ in 0..6 {

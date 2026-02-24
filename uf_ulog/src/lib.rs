@@ -9,17 +9,20 @@ extern crate self as uf_ulog;
 pub use uf_ulog_macro::ULogData;
 pub mod adapters;
 mod cfg;
+mod export;
 mod registry;
 mod types;
 mod ulog;
 mod writer;
 #[cfg(feature = "async")]
 mod writer_async;
+mod writer_common;
 
 pub use cfg::{DefaultCfg, PayloadBuf, StreamState, TextBuf, ULogCfg};
+pub use export::{ExportError, ExportStep};
 pub use registry::{MessageMeta, MessageSet, Registry, TopicIndex};
 pub use types::{EncodeError, LogLevel, LoggedString, Subscription, ULogData};
 pub use ulog::{EmitStatus, Record, RecordSink, TrySendError, ULogProducer};
-pub use writer::{ExportError, ExportStep, RecordSource, ULogExporter};
+pub use writer::{RecordSource, ULogExporter};
 #[cfg(feature = "async")]
 pub use writer_async::{AsyncRecordSource, ULogAsyncExporter};
