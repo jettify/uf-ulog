@@ -1,14 +1,16 @@
 use std::convert::Infallible;
 
 use uf_ulog::adapters;
-use uf_ulog::register_messages;
-use uf_ulog::DefaultCfg;
 use uf_ulog::ExportStep;
 use uf_ulog::LogLevel;
-use uf_ulog::ULogCfg;
 use uf_ulog::ULogData;
 use uf_ulog::ULogExporter;
 use uf_ulog::ULogProducer;
+use uf_ulog::ULogRegistry;
+
+const RECORD_CAP: usize = 128;
+const MAX_MULTI_IDS: usize = 8;
+const MAX_STREAMS: usize = 1024;
 
 #[derive(ULogData, Debug)]
 struct Acc {
@@ -53,15 +55,11 @@ struct ErrorData {
     code: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ExampleCfg;
-
-impl ULogCfg for ExampleCfg {
-    type Text = heapless::String<64>;
-    type Payload = [u8; 128];
-    type Streams = <DefaultCfg as ULogCfg>::Streams;
-
-    const MAX_MULTI_IDS: usize = DefaultCfg::MAX_MULTI_IDS;
+#[derive(ULogRegistry)]
+pub enum UlogDataMessages {
+    Gyro,
+    Acc,
+    ErrorData,
 }
 
 #[derive(Default)]
@@ -83,13 +81,6 @@ impl embedded_io::Write for PrintWriter {
 }
 
 fn main() {
-    register_messages! {
-        enum UlogDataMessages {
-            Gyro,
-            Acc,
-            ErrorData,
-        }
-    }
     let g = Gyro {
         timestamp: 0,
         x: 1.0,
@@ -108,17 +99,22 @@ fn main() {
         code: ErrorCodes::GenericError.code(),
     };
 
-    let (tx, rx) = adapters::std::channel::<ExampleCfg>(32);
-    let mut ulog = ULogProducer::<_, UlogDataMessages, ExampleCfg>::new(tx);
+    let (tx, rx) = adapters::std::channel::<RECORD_CAP, MAX_MULTI_IDS>(32);
+    let mut ulog = ULogProducer::<_, UlogDataMessages, RECORD_CAP, MAX_MULTI_IDS>::new(tx);
 
     ulog.data::<Gyro>(&g);
     ulog.data::<Acc>(&a);
     ulog.data_instance::<Acc>(&a, 1);
     ulog.data::<ErrorData>(&err_code);
+    ulog.parameter_i32("SYS_LOGGER", 1);
     ulog.log(LogLevel::Info, 43, "info log");
     ulog.log_tagged(LogLevel::Info, 1, 43, "info log");
 
-    let mut exporter = ULogExporter::<_, _, UlogDataMessages, ExampleCfg>::new(PrintWriter, rx);
+    let mut exporter =
+        ULogExporter::<_, _, UlogDataMessages, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>::new(
+            PrintWriter,
+            rx,
+        );
     exporter.emit_startup(0).unwrap();
 
     loop {

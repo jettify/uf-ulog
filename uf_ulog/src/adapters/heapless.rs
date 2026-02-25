@@ -1,41 +1,56 @@
-use crate::{Record, RecordSink, RecordSource, TrySendError, ULogCfg};
+use crate::{Record, RecordSink, RecordSource, TrySendError};
 
-pub struct QueueTx<'a, const N: usize, C: ULogCfg> {
-    queue: &'a heapless::mpmc::Queue<Record<C>, N>,
+pub struct QueueTx<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+    queue: &'a heapless::mpmc::Queue<Record<RECORD_CAP, MAX_MULTI_IDS>, N>,
 }
 
-impl<'a, const N: usize, C: ULogCfg> QueueTx<'a, N, C> {
-    pub fn new(queue: &'a heapless::mpmc::Queue<Record<C>, N>) -> Self {
+impl<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize>
+    QueueTx<'a, N, RECORD_CAP, MAX_MULTI_IDS>
+{
+    pub fn new(queue: &'a heapless::mpmc::Queue<Record<RECORD_CAP, MAX_MULTI_IDS>, N>) -> Self {
         Self { queue }
     }
 }
 
-impl<'a, const N: usize, C: ULogCfg> RecordSink<C> for QueueTx<'a, N, C> {
-    fn try_send(&mut self, item: Record<C>) -> Result<(), TrySendError> {
+impl<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> RecordSink
+    for QueueTx<'a, N, RECORD_CAP, MAX_MULTI_IDS>
+{
+    type Rec = Record<RECORD_CAP, MAX_MULTI_IDS>;
+
+    fn try_send(&mut self, item: Self::Rec) -> Result<(), TrySendError> {
         self.queue.enqueue(item).map_err(|_| TrySendError::Full)
     }
 }
 
 #[derive(Clone, Copy)]
-pub struct QueueRx<'a, const N: usize, C: ULogCfg> {
-    queue: &'a heapless::mpmc::Queue<Record<C>, N>,
+pub struct QueueRx<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+    queue: &'a heapless::mpmc::Queue<Record<RECORD_CAP, MAX_MULTI_IDS>, N>,
 }
 
-impl<'a, const N: usize, C: ULogCfg> QueueRx<'a, N, C> {
-    pub fn new(queue: &'a heapless::mpmc::Queue<Record<C>, N>) -> Self {
+impl<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize>
+    QueueRx<'a, N, RECORD_CAP, MAX_MULTI_IDS>
+{
+    pub fn new(queue: &'a heapless::mpmc::Queue<Record<RECORD_CAP, MAX_MULTI_IDS>, N>) -> Self {
         Self { queue }
     }
 }
 
-impl<'a, const N: usize, C: ULogCfg> RecordSource<C> for QueueRx<'a, N, C> {
-    fn try_recv(&mut self) -> Option<Record<C>> {
+impl<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> RecordSource
+    for QueueRx<'a, N, RECORD_CAP, MAX_MULTI_IDS>
+{
+    type Rec = Record<RECORD_CAP, MAX_MULTI_IDS>;
+
+    fn try_recv(&mut self) -> Option<Self::Rec> {
         self.queue.dequeue()
     }
 }
 
-pub fn bind<'a, const N: usize, C: ULogCfg>(
-    queue: &'a heapless::mpmc::Queue<Record<C>, N>,
-) -> (QueueTx<'a, N, C>, QueueRx<'a, N, C>) {
+pub fn bind<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize>(
+    queue: &'a heapless::mpmc::Queue<Record<RECORD_CAP, MAX_MULTI_IDS>, N>,
+) -> (
+    QueueTx<'a, N, RECORD_CAP, MAX_MULTI_IDS>,
+    QueueRx<'a, N, RECORD_CAP, MAX_MULTI_IDS>,
+) {
     (QueueTx::new(queue), QueueRx::new(queue))
 }
 
@@ -45,23 +60,15 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct TestCfg;
-
-    impl crate::ULogCfg for TestCfg {
-        type Text = heapless::String<16>;
-        type Payload = [u8; 16];
-        type Streams = [u8; 64];
-
-        const MAX_MULTI_IDS: usize = 8;
-    }
+    const CAP: usize = 16;
+    const MI: usize = 8;
 
     #[test]
     fn enqueue_and_dequeue_round_trip() {
         #[expect(deprecated)]
-        let queue = heapless::mpmc::Queue::<Record<TestCfg>, 2>::new();
+        let queue = heapless::mpmc::Queue::<Record<CAP, MI>, 2>::new();
         let (mut tx, mut rx) = bind(&queue);
-        let mut text = heapless::String::<16>::new();
+        let mut text = heapless::String::<CAP>::new();
         let _ = text.push_str("ok");
         let record = Record::LoggedString {
             level: LogLevel::Info,
@@ -78,9 +85,9 @@ mod tests {
     #[test]
     fn full_mapping() {
         #[expect(deprecated)]
-        let queue = heapless::mpmc::Queue::<Record<TestCfg>, 2>::new();
+        let queue = heapless::mpmc::Queue::<Record<CAP, MI>, 2>::new();
         let (mut tx, _rx) = bind(&queue);
-        let mut text = heapless::String::<16>::new();
+        let mut text = heapless::String::<CAP>::new();
         let _ = text.push_str("x");
         let record = Record::LoggedString {
             level: LogLevel::Info,
@@ -97,13 +104,13 @@ mod tests {
     #[test]
     fn multiple_producers() {
         #[expect(deprecated)]
-        let queue = heapless::mpmc::Queue::<Record<TestCfg>, 4>::new();
+        let queue = heapless::mpmc::Queue::<Record<CAP, MI>, 4>::new();
         let (mut tx1, mut rx) = bind(&queue);
         let mut tx2 = QueueTx::new(&queue);
 
-        let mut a = heapless::String::<16>::new();
+        let mut a = heapless::String::<CAP>::new();
         let _ = a.push_str("a");
-        let mut b = heapless::String::<16>::new();
+        let mut b = heapless::String::<CAP>::new();
         let _ = b.push_str("b");
 
         tx1.try_send(Record::LoggedString {

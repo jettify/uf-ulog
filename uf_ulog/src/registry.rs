@@ -5,12 +5,31 @@ pub struct MessageMeta {
     pub wire_size: usize,
 }
 
-pub trait MessageSet: Sized {
+pub trait ULogRegistry: Sized {
     const REGISTRY: Registry;
 }
 
-pub trait TopicIndex<R: MessageSet> {
-    const INDEX: u16;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Topic<T> {
+    id: u16,
+    _marker: core::marker::PhantomData<fn() -> T>,
+}
+
+impl<T> Topic<T> {
+    pub const fn new(id: u16) -> Self {
+        Self {
+            id,
+            _marker: core::marker::PhantomData,
+        }
+    }
+
+    pub const fn id(self) -> u16 {
+        self.id
+    }
+}
+
+pub trait TopicOf<R>: Sized {
+    const TOPIC: Topic<Self>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,38 +85,4 @@ const fn str_eq(a: &str, b: &str) -> bool {
         i += 1;
     }
     true
-}
-
-#[macro_export]
-macro_rules! register_messages {
-    ($vis:vis enum $name:ident { $($ty:ty),* $(,)? }) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        $vis enum $name {}
-
-        $crate::__register_messages_impl_topic_index!($name, 0u16; $($ty),*);
-
-        impl $crate::MessageSet for $name {
-            const REGISTRY: $crate::Registry = $crate::Registry::new(&[
-                $(
-                    $crate::MessageMeta {
-                        name: <$ty as $crate::ULogData>::NAME,
-                        format: <$ty as $crate::ULogData>::FORMAT,
-                        wire_size: <$ty as $crate::ULogData>::WIRE_SIZE,
-                    }
-                ),*
-            ]);
-        }
-    };
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __register_messages_impl_topic_index {
-    ($key:ty, $idx:expr; $head:ty $(, $tail:ty)*) => {
-        impl $crate::TopicIndex<$key> for $head {
-            const INDEX: u16 = $idx;
-        }
-        $crate::__register_messages_impl_topic_index!($key, ($idx + 1u16); $($tail),*);
-    };
-    ($key:ty, $idx:expr;) => {};
 }

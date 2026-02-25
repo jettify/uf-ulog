@@ -1,44 +1,55 @@
 use core::marker::PhantomData;
 
 use crate::writer_common;
-use crate::{
-    DefaultCfg, ExportError, ExportStep, MessageSet, Record, StreamState, TextBuf, ULogCfg,
-};
+use crate::{ExportError, ExportStep, ParameterValue, Record, ULogRegistry};
 
 #[allow(async_fn_in_trait)]
-pub trait AsyncRecordSource<C: ULogCfg> {
-    async fn recv(&mut self) -> Record<C>;
+pub trait AsyncRecordSource {
+    type Rec;
+
+    async fn recv(&mut self) -> Self::Rec;
 }
 
-pub struct ULogAsyncExporter<W, Rx, R: MessageSet, C: ULogCfg = DefaultCfg> {
+pub struct ULogAsyncExporter<
+    W,
+    Rx,
+    R: ULogRegistry,
+    const RECORD_CAP: usize = 256,
+    const MAX_MULTI_IDS: usize = 8,
+    const MAX_STREAMS: usize = 1024,
+> {
     writer: W,
     rx: Rx,
     started: bool,
-    subscribed: C::Streams,
-    _cfg: PhantomData<C>,
+    subscribed: [u8; MAX_STREAMS],
+    dropped_streams: u32,
     _messages: PhantomData<R>,
 }
 
-impl<W, Rx, R, C> ULogAsyncExporter<W, Rx, R, C>
+impl<W, Rx, R, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize, const MAX_STREAMS: usize>
+    ULogAsyncExporter<W, Rx, R, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>
 where
     W: embedded_io_async::Write,
-    Rx: AsyncRecordSource<C>,
-    R: MessageSet,
-    C: ULogCfg,
+    Rx: AsyncRecordSource<Rec = Record<RECORD_CAP, MAX_MULTI_IDS>>,
+    R: ULogRegistry,
 {
     pub fn new(writer: W, rx: Rx) -> Self {
         Self {
             writer,
             rx,
             started: false,
-            subscribed: C::Streams::zeroed(),
-            _cfg: PhantomData,
+            subscribed: [0; MAX_STREAMS],
+            dropped_streams: 0,
             _messages: PhantomData,
         }
     }
 
     pub fn writer_mut(&mut self) -> &mut W {
         &mut self.writer
+    }
+
+    pub fn dropped_streams(&self) -> u32 {
+        self.dropped_streams
     }
 
     pub async fn emit_startup(
@@ -81,7 +92,7 @@ where
 
     pub async fn write_record(
         &mut self,
-        record: Record<C>,
+        record: Record<RECORD_CAP, MAX_MULTI_IDS>,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
         match record {
             Record::LoggedString {
@@ -105,7 +116,7 @@ where
                 payload,
             } => {
                 let topic_index_usize = usize::from(topic_index);
-                if usize::from(instance) >= C::MAX_MULTI_IDS {
+                if usize::from(instance) >= MAX_MULTI_IDS {
                     return Err(ExportError::InvalidMultiId);
                 }
 
@@ -114,25 +125,35 @@ where
                     <W as embedded_io_async::ErrorType>::Error,
                 >(topic_index_usize)?;
 
-                let slot = writer_common::stream_slot::<
-                    C,
-                    <W as embedded_io_async::ErrorType>::Error,
-                >(topic_index_usize, usize::from(instance))?;
+                let Some(slot) = writer_common::stream_slot::<MAX_MULTI_IDS>(
+                    topic_index_usize,
+                    usize::from(instance),
+                ) else {
+                    self.dropped_streams = self.dropped_streams.saturating_add(1);
+                    return Ok(());
+                };
+
+                if slot >= MAX_STREAMS {
+                    self.dropped_streams = self.dropped_streams.saturating_add(1);
+                    return Ok(());
+                }
+
                 let msg_id =
                     writer_common::slot_msg_id::<<W as embedded_io_async::ErrorType>::Error>(slot)?;
 
-                if !self.subscribed.is_subscribed(slot) {
+                if self.subscribed[slot] == 0 {
                     self.write_add_subscription(instance, msg_id, meta.name)
                         .await?;
-                    self.subscribed.mark_subscribed(slot);
+                    self.subscribed[slot] = 1;
                 }
 
                 let data = writer_common::payload_with_len::<
-                    C,
+                    RECORD_CAP,
                     <W as embedded_io_async::ErrorType>::Error,
                 >(&payload, payload_len)?;
                 self.write_data(msg_id, data).await
             }
+            Record::Parameter { key, value } => self.write_parameter(key.as_bytes(), value).await,
         }
     }
 
@@ -205,6 +226,20 @@ where
         let total_len =
             writer_common::tagged_log_payload(&mut payload, level, tag, timestamp, text)?;
         self.write_message(b'C', &payload[..total_len]).await
+    }
+
+    async fn write_parameter(
+        &mut self,
+        key: &[u8],
+        value: ParameterValue,
+    ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
+        let mut payload = [0u8; 512];
+        let raw = match value {
+            ParameterValue::I32(v) => v.to_le_bytes(),
+            ParameterValue::F32(v) => v.to_le_bytes(),
+        };
+        let total_len = writer_common::parameter_payload(&mut payload, key, &raw)?;
+        self.write_message(b'P', &payload[..total_len]).await
     }
 
     async fn write_message(

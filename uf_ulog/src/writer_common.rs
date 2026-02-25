@@ -1,9 +1,9 @@
 use crate::export::ExportError;
-use crate::{MessageMeta, MessageSet, PayloadBuf, StreamState, ULogCfg};
+use crate::{MessageMeta, ULogRegistry};
 
 const ULOG_HEADER_MAGIC: [u8; 8] = [0x55, 0x4c, 0x6f, 0x67, 0x01, 0x12, 0x35, 0x01];
 
-pub fn registry_entry<R: MessageSet, E>(
+pub fn registry_entry<R: ULogRegistry, E>(
     topic_index: usize,
 ) -> Result<&'static MessageMeta, ExportError<E>> {
     R::REGISTRY
@@ -11,20 +11,13 @@ pub fn registry_entry<R: MessageSet, E>(
         .ok_or(ExportError::InvalidTopicIndex)
 }
 
-pub fn stream_slot<C: ULogCfg, E>(
+pub fn stream_slot<const MAX_MULTI_IDS: usize>(
     topic_index: usize,
     instance: usize,
-) -> Result<usize, ExportError<E>> {
-    let Some(slot) = topic_index
-        .checked_mul(C::MAX_MULTI_IDS)
+) -> Option<usize> {
+    topic_index
+        .checked_mul(MAX_MULTI_IDS)
         .and_then(|v| v.checked_add(instance))
-    else {
-        return Err(ExportError::TooManyStreams);
-    };
-    if slot >= C::Streams::MAX_STREAMS {
-        return Err(ExportError::TooManyStreams);
-    }
-    Ok(slot)
 }
 
 pub fn slot_msg_id<E>(slot: usize) -> Result<u16, ExportError<E>> {
@@ -45,15 +38,15 @@ pub fn checked_total_len<E>(
     Ok(total_len)
 }
 
-pub fn payload_with_len<C: ULogCfg, E>(
-    payload: &C::Payload,
+pub fn payload_with_len<const RECORD_CAP: usize, E>(
+    payload: &[u8; RECORD_CAP],
     payload_len: u16,
 ) -> Result<&[u8], ExportError<E>> {
     let len = usize::from(payload_len);
-    if len > payload.as_slice().len() {
+    if len > RECORD_CAP {
         return Err(ExportError::MessageTooLarge);
     }
-    Ok(&payload.as_slice()[..len])
+    Ok(&payload[..len])
 }
 
 pub fn write_header(timestamp_micros: u64) -> [u8; 16] {
@@ -141,5 +134,20 @@ pub fn tagged_log_payload<E>(
     payload[1..3].copy_from_slice(&tag.to_le_bytes());
     payload[3..11].copy_from_slice(&timestamp.to_le_bytes());
     payload[11..total_len].copy_from_slice(text);
+    Ok(total_len)
+}
+
+pub fn parameter_payload<E>(
+    payload: &mut [u8; 512],
+    key: &[u8],
+    value: &[u8],
+) -> Result<usize, ExportError<E>> {
+    let key_len = u8::try_from(key.len()).map_err(|_| ExportError::MessageTooLarge)?;
+    let value_offset = checked_total_len(1, key.len(), payload.len())?;
+    let total_len = checked_total_len(value_offset, value.len(), payload.len())?;
+
+    payload[0] = key_len;
+    payload[1..value_offset].copy_from_slice(key);
+    payload[value_offset..total_len].copy_from_slice(value);
     Ok(total_len)
 }

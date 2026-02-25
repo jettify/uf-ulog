@@ -2,20 +2,24 @@ use core::marker::PhantomData;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::mpsc::{TryRecvError as ChannelTryRecvError, TrySendError as ChannelTrySendError};
 
-use crate::{Record, RecordSink, RecordSource, TrySendError, ULogCfg};
+use crate::{Record, RecordSink, RecordSource, TrySendError};
 
-pub struct ChannelTx<C: ULogCfg> {
-    tx: SyncSender<Record<C>>,
+pub struct ChannelTx<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+    tx: SyncSender<Record<RECORD_CAP, MAX_MULTI_IDS>>,
 }
 
-impl<C: ULogCfg> ChannelTx<C> {
-    pub fn new(tx: SyncSender<Record<C>>) -> Self {
+impl<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> ChannelTx<RECORD_CAP, MAX_MULTI_IDS> {
+    pub fn new(tx: SyncSender<Record<RECORD_CAP, MAX_MULTI_IDS>>) -> Self {
         Self { tx }
     }
 }
 
-impl<C: ULogCfg> RecordSink<C> for ChannelTx<C> {
-    fn try_send(&mut self, item: Record<C>) -> Result<(), TrySendError> {
+impl<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> RecordSink
+    for ChannelTx<RECORD_CAP, MAX_MULTI_IDS>
+{
+    type Rec = Record<RECORD_CAP, MAX_MULTI_IDS>;
+
+    fn try_send(&mut self, item: Self::Rec) -> Result<(), TrySendError> {
         match self.tx.try_send(item) {
             Ok(()) => Ok(()),
             Err(ChannelTrySendError::Full(_)) => Err(TrySendError::Full),
@@ -24,22 +28,26 @@ impl<C: ULogCfg> RecordSink<C> for ChannelTx<C> {
     }
 }
 
-pub struct ChannelRx<C: ULogCfg> {
-    rx: Receiver<Record<C>>,
-    _cfg: PhantomData<C>,
+pub struct ChannelRx<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+    rx: Receiver<Record<RECORD_CAP, MAX_MULTI_IDS>>,
+    _pd: PhantomData<Record<RECORD_CAP, MAX_MULTI_IDS>>,
 }
 
-impl<C: ULogCfg> ChannelRx<C> {
-    pub fn new(rx: Receiver<Record<C>>) -> Self {
+impl<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> ChannelRx<RECORD_CAP, MAX_MULTI_IDS> {
+    pub fn new(rx: Receiver<Record<RECORD_CAP, MAX_MULTI_IDS>>) -> Self {
         Self {
             rx,
-            _cfg: PhantomData,
+            _pd: PhantomData,
         }
     }
 }
 
-impl<C: ULogCfg> RecordSource<C> for ChannelRx<C> {
-    fn try_recv(&mut self) -> Option<Record<C>> {
+impl<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> RecordSource
+    for ChannelRx<RECORD_CAP, MAX_MULTI_IDS>
+{
+    type Rec = Record<RECORD_CAP, MAX_MULTI_IDS>;
+
+    fn try_recv(&mut self) -> Option<Self::Rec> {
         match self.rx.try_recv() {
             Ok(record) => Some(record),
             Err(ChannelTryRecvError::Empty) | Err(ChannelTryRecvError::Disconnected) => None,
@@ -47,7 +55,12 @@ impl<C: ULogCfg> RecordSource<C> for ChannelRx<C> {
     }
 }
 
-pub fn channel<C: ULogCfg>(bound: usize) -> (ChannelTx<C>, ChannelRx<C>) {
+pub fn channel<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize>(
+    bound: usize,
+) -> (
+    ChannelTx<RECORD_CAP, MAX_MULTI_IDS>,
+    ChannelRx<RECORD_CAP, MAX_MULTI_IDS>,
+) {
     let (tx, rx) = sync_channel(bound);
     (ChannelTx::new(tx), ChannelRx::new(rx))
 }
@@ -58,21 +71,13 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct TestCfg;
-
-    impl crate::ULogCfg for TestCfg {
-        type Text = heapless::String<16>;
-        type Payload = [u8; 16];
-        type Streams = [u8; 64];
-
-        const MAX_MULTI_IDS: usize = 8;
-    }
+    const CAP: usize = 16;
+    const MI: usize = 8;
 
     #[test]
     fn send_and_recv_round_trip() {
-        let (mut tx, mut rx) = channel::<TestCfg>(1);
-        let mut text = heapless::String::<16>::new();
+        let (mut tx, mut rx) = channel::<CAP, MI>(1);
+        let mut text = heapless::String::<CAP>::new();
         let _ = text.push_str("ok");
         let record = Record::LoggedString {
             level: LogLevel::Info,
@@ -87,9 +92,9 @@ mod tests {
 
     #[test]
     fn full_and_closed_mapping() {
-        let (raw_tx, raw_rx) = sync_channel::<Record<TestCfg>>(1);
-        let mut tx = ChannelTx::<TestCfg>::new(raw_tx.clone());
-        let mut text = heapless::String::<16>::new();
+        let (raw_tx, raw_rx) = sync_channel::<Record<CAP, MI>>(1);
+        let mut tx = ChannelTx::<CAP, MI>::new(raw_tx.clone());
+        let mut text = heapless::String::<CAP>::new();
         let _ = text.push_str("x");
         let record = Record::LoggedString {
             level: LogLevel::Info,
@@ -101,8 +106,8 @@ mod tests {
         assert_eq!(tx.try_send(record), Err(TrySendError::Full));
 
         drop(raw_rx);
-        let mut closed_tx = ChannelTx::<TestCfg>::new(raw_tx);
-        let mut text = heapless::String::<16>::new();
+        let mut closed_tx = ChannelTx::<CAP, MI>::new(raw_tx);
+        let mut text = heapless::String::<CAP>::new();
         let _ = text.push_str("x");
         let closed_record = Record::LoggedString {
             level: LogLevel::Info,
