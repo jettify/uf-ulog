@@ -1,5 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
+use std::collections::BTreeSet;
 use syn::{parse_macro_input, DeriveInput, Expr, Fields, Lit, LitStr, Type, TypeArray, TypePath};
 
 #[derive(Clone, Copy)]
@@ -84,6 +85,14 @@ pub fn derive_ulog_message(input: TokenStream) -> TokenStream {
         .into()
 }
 
+#[proc_macro_derive(ULogRegistry, attributes(uf_ulog))]
+pub fn derive_ulog_registry(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    expand_registry_derive(&input)
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
 fn expand_derive(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let ident = &input.ident;
     if !input.generics.params.is_empty() {
@@ -110,6 +119,79 @@ fn expand_derive(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         &size_terms,
         &encode_body,
     ))
+}
+
+fn expand_registry_derive(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let enum_ident = &input.ident;
+    if !input.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &input.generics,
+            "ULogRegistry does not support enums with generics",
+        ));
+    }
+
+    let enum_data = match &input.data {
+        syn::Data::Enum(data) => data,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                enum_ident,
+                "ULogRegistry can only be derived for enums",
+            ));
+        }
+    };
+
+    let mut seen_types = BTreeSet::new();
+    let mut message_types = Vec::with_capacity(enum_data.variants.len());
+    for variant in &enum_data.variants {
+        match variant.fields {
+            Fields::Unit => {}
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &variant.fields,
+                    "ULogRegistry requires unit enum variants",
+                ));
+            }
+        }
+
+        let type_ident = variant.ident.clone();
+        let type_name = type_ident.to_string();
+        if !seen_types.insert(type_name) {
+            return Err(syn::Error::new_spanned(
+                &variant.ident,
+                "duplicate message type in ULogRegistry enum",
+            ));
+        }
+        message_types.push(type_ident);
+    }
+
+    let meta_entries = message_types.iter().map(|ty| {
+        quote! {
+            ::uf_ulog::MessageMeta {
+                name: <#ty as ::uf_ulog::ULogData>::NAME,
+                format: <#ty as ::uf_ulog::ULogData>::FORMAT,
+                wire_size: <#ty as ::uf_ulog::ULogData>::WIRE_SIZE,
+            }
+        }
+    });
+
+    let topic_impls = message_types.iter().enumerate().map(|(idx, ty)| {
+        let idx_lit = idx as u16;
+        quote! {
+            impl ::uf_ulog::TopicOf<#enum_ident> for #ty {
+                const TOPIC: ::uf_ulog::Topic<Self> = ::uf_ulog::Topic::new(#idx_lit);
+            }
+        }
+    });
+
+    Ok(quote! {
+        impl ::uf_ulog::ULogRegistry for #enum_ident {
+            const REGISTRY: ::uf_ulog::Registry = ::uf_ulog::Registry::new(&[
+                #(#meta_entries),*
+            ]);
+        }
+
+        #(#topic_impls)*
+    })
 }
 
 fn extract_ulog_name(input: &DeriveInput) -> syn::Result<LitStr> {

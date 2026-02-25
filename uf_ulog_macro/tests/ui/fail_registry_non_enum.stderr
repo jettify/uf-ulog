@@ -1,0 +1,5 @@
+error: ULogRegistry can only be derived for enums
+ --> tests/ui/fail_registry_non_enum.rs:2:8
+  |
+2 | struct NotAnEnum;
+  |        ^^^^^^^^^

@@ -1,0 +1,5 @@
+error: ULogRegistry does not support enums with generics
+ --> tests/ui/fail_registry_generics.rs:2:12
+  |
+2 | enum Topics<T> {
+  |            ^^^

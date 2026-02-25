@@ -1,0 +1,5 @@
+error: ULogRegistry requires unit enum variants
+ --> tests/ui/fail_registry_non_unit_variant.rs:3:10
+  |
+3 |     Gyro { value: u8 },
+  |          ^^^^^^^^^^^^^
