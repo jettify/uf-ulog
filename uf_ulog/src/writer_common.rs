@@ -38,17 +38,6 @@ pub fn checked_total_len<E>(
     Ok(total_len)
 }
 
-pub fn payload_with_len<const RECORD_CAP: usize, E>(
-    payload: &[u8; RECORD_CAP],
-    payload_len: u16,
-) -> Result<&[u8], ExportError<E>> {
-    let len = usize::from(payload_len);
-    if len > RECORD_CAP {
-        return Err(ExportError::MessageTooLarge);
-    }
-    Ok(&payload[..len])
-}
-
 pub fn write_header(timestamp_micros: u64) -> [u8; 16] {
     let mut header = [0u8; 16];
     header[..8].copy_from_slice(&ULOG_HEADER_MAGIC);

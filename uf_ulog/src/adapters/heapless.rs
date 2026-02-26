@@ -68,14 +68,7 @@ mod tests {
         #[expect(deprecated)]
         let queue = heapless::mpmc::Queue::<Record<CAP, MI>, 2>::new();
         let (mut tx, mut rx) = bind(&queue);
-        let mut text = heapless::String::<CAP>::new();
-        let _ = text.push_str("ok");
-        let record = Record::LoggedString {
-            level: LogLevel::Info,
-            tag: None,
-            ts: 1,
-            text,
-        };
+        let record = Record::new_log(LogLevel::Info, None, 1, b"ok");
 
         tx.try_send(record.clone()).unwrap();
         assert_eq!(rx.try_recv(), Some(record));
@@ -87,14 +80,7 @@ mod tests {
         #[expect(deprecated)]
         let queue = heapless::mpmc::Queue::<Record<CAP, MI>, 2>::new();
         let (mut tx, _rx) = bind(&queue);
-        let mut text = heapless::String::<CAP>::new();
-        let _ = text.push_str("x");
-        let record = Record::LoggedString {
-            level: LogLevel::Info,
-            tag: None,
-            ts: 0,
-            text,
-        };
+        let record = Record::new_log(LogLevel::Info, None, 0, b"x");
 
         tx.try_send(record.clone()).unwrap();
         tx.try_send(record.clone()).unwrap();
@@ -108,24 +94,9 @@ mod tests {
         let (mut tx1, mut rx) = bind(&queue);
         let mut tx2 = QueueTx::new(&queue);
 
-        let mut a = heapless::String::<CAP>::new();
-        let _ = a.push_str("a");
-        let mut b = heapless::String::<CAP>::new();
-        let _ = b.push_str("b");
-
-        tx1.try_send(Record::LoggedString {
-            level: LogLevel::Info,
-            tag: None,
-            ts: 1,
-            text: a,
-        })
+        tx1.try_send(Record::new_log(LogLevel::Info, None, 1, b"a"))
         .unwrap();
-        tx2.try_send(Record::LoggedString {
-            level: LogLevel::Info,
-            tag: None,
-            ts: 2,
-            text: b,
-        })
+        tx2.try_send(Record::new_log(LogLevel::Info, None, 2, b"b"))
         .unwrap();
 
         assert!(rx.try_recv().is_some());

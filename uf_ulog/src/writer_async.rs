@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
 use crate::writer_common;
-use crate::{ExportError, ExportStep, ParameterValue, Record, ULogRegistry};
+use crate::{ExportError, ExportStep, ParameterValue, Record, RecordMeta, ULogRegistry};
 
 #[allow(async_fn_in_trait)]
 pub trait AsyncRecordSource {
@@ -15,7 +15,7 @@ pub struct ULogAsyncExporter<
     Rx,
     R: ULogRegistry,
     const RECORD_CAP: usize = 256,
-    const MAX_MULTI_IDS: usize = 8,
+    const MAX_MULTI_IDS: usize = 4,
     const MAX_STREAMS: usize = 1024,
 > {
     writer: W,
@@ -94,26 +94,19 @@ where
         &mut self,
         record: Record<RECORD_CAP, MAX_MULTI_IDS>,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        match record {
-            Record::LoggedString {
-                level,
-                tag,
-                ts,
-                text,
-            } => {
+        match record.meta() {
+            RecordMeta::LoggedString { level, tag, ts } => {
                 if let Some(tag) = tag {
-                    self.write_tagged_log(level as u8, tag, ts, text.as_bytes())
+                    self.write_tagged_log(level as u8, tag, ts, record.bytes())
                         .await
                 } else {
-                    self.write_log(level as u8, ts, text.as_bytes()).await
+                    self.write_log(level as u8, ts, record.bytes()).await
                 }
             }
-            Record::Data {
+            RecordMeta::Data {
                 topic_index,
                 instance,
                 ts: _,
-                payload_len,
-                payload,
             } => {
                 let topic_index_usize = usize::from(topic_index);
                 if usize::from(instance) >= MAX_MULTI_IDS {
@@ -147,13 +140,9 @@ where
                     self.subscribed[slot] = 1;
                 }
 
-                let data = writer_common::payload_with_len::<
-                    RECORD_CAP,
-                    <W as embedded_io_async::ErrorType>::Error,
-                >(&payload, payload_len)?;
-                self.write_data(msg_id, data).await
+                self.write_data(msg_id, record.bytes()).await
             }
-            Record::Parameter { key, value } => self.write_parameter(key.as_bytes(), value).await,
+            RecordMeta::Parameter { value } => self.write_parameter(record.bytes(), value).await,
         }
     }
 

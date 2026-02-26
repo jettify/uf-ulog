@@ -20,7 +20,10 @@ mod writer_common;
 pub use export::{ExportError, ExportStep};
 pub use registry::{MessageMeta, Registry, Topic, TopicOf, ULogRegistry};
 pub use types::{EncodeError, LogLevel, LoggedString, Subscription, ULogData};
-pub use ulog::{EmitStatus, ParameterValue, Record, RecordSink, TrySendError, ULogProducer};
+pub use ulog::{
+    EmitStatus, ParameterValue, Record, RecordKind, RecordMeta, RecordSink, TrySendError,
+    ULogProducer,
+};
 pub use writer::{RecordSource, ULogExporter};
 #[cfg(feature = "async")]
 pub use writer_async::{AsyncRecordSource, ULogAsyncExporter};

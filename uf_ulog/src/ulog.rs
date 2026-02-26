@@ -27,32 +27,92 @@ pub enum ParameterValue {
     F32(f32),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Record<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordKind {
+    LoggedString,
+    Data,
+    Parameter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RecordMeta {
     LoggedString {
         level: LogLevel,
         tag: Option<u16>,
         ts: u64,
-        text: heapless::String<RECORD_CAP>,
     },
     Data {
         topic_index: u16,
         instance: u8,
         ts: u64,
-        payload_len: u16,
-        payload: [u8; RECORD_CAP],
     },
     Parameter {
-        key: heapless::String<RECORD_CAP>,
         value: ParameterValue,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Record<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+    meta: RecordMeta,
+    bytes: heapless::Vec<u8, RECORD_CAP>,
+}
+
+impl<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> Record<RECORD_CAP, MAX_MULTI_IDS> {
+    pub fn new_log(level: LogLevel, tag: Option<u16>, ts: u64, text: &[u8]) -> Self {
+        let mut bytes = heapless::Vec::new();
+        let end = core::cmp::min(text.len(), RECORD_CAP);
+        let _ = bytes.extend_from_slice(&text[..end]);
+        Self {
+            meta: RecordMeta::LoggedString { level, tag, ts },
+            bytes,
+        }
+    }
+
+    pub fn new_data(topic_index: u16, instance: u8, ts: u64, payload: &[u8]) -> Option<Self> {
+        let bytes = heapless::Vec::from_slice(payload).ok()?;
+        Some(Self {
+            meta: RecordMeta::Data {
+                topic_index,
+                instance,
+                ts,
+            },
+            bytes,
+        })
+    }
+
+    pub fn new_parameter(key: &[u8], value: ParameterValue) -> Option<Self> {
+        if key.len() > usize::from(u8::MAX) {
+            return None;
+        }
+        let bytes = heapless::Vec::from_slice(key).ok()?;
+        Some(Self {
+            meta: RecordMeta::Parameter { value },
+            bytes,
+        })
+    }
+
+    pub fn kind(&self) -> RecordKind {
+        match self.meta {
+            RecordMeta::LoggedString { .. } => RecordKind::LoggedString,
+            RecordMeta::Data { .. } => RecordKind::Data,
+            RecordMeta::Parameter { .. } => RecordKind::Parameter,
+        }
+    }
+
+    pub fn meta(&self) -> RecordMeta {
+        self.meta
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
 }
 
 pub struct ULogProducer<
     Tx,
     R: ULogRegistry,
     const RECORD_CAP: usize = 256,
-    const MAX_MULTI_IDS: usize = 8,
+    const MAX_MULTI_IDS: usize = 4,
 > {
     tx: Tx,
     dropped_total: AtomicU32,
@@ -75,23 +135,13 @@ where
 
     pub fn log(&mut self, level: LogLevel, ts: u64, msg: &str) -> EmitStatus {
         let text = make_text::<RECORD_CAP>(msg);
-        let record = Record::LoggedString {
-            level,
-            tag: None,
-            ts,
-            text,
-        };
+        let record = Record::new_log(level, None, ts, &text);
         self.try_emit(record)
     }
 
     pub fn log_tagged(&mut self, level: LogLevel, tag: u16, ts: u64, msg: &str) -> EmitStatus {
         let text = make_text::<RECORD_CAP>(msg);
-        let record = Record::LoggedString {
-            level,
-            tag: Some(tag),
-            ts,
-            text,
-        };
+        let record = Record::new_log(level, Some(tag), ts, &text);
         self.try_emit(record)
     }
 
@@ -125,8 +175,8 @@ where
             return EmitStatus::Dropped;
         }
 
-        let mut payload = [0; RECORD_CAP];
-        let encoded_len = match value.encode(&mut payload) {
+        let mut encoded = [0; RECORD_CAP];
+        let encoded_len = match value.encode(&mut encoded) {
             Ok(encoded_len) => encoded_len,
             Err(_) => {
                 self.dropped_total.fetch_add(1, Ordering::Relaxed);
@@ -137,20 +187,17 @@ where
             self.dropped_total.fetch_add(1, Ordering::Relaxed);
             return EmitStatus::Dropped;
         }
-        let payload_len = match u16::try_from(encoded_len) {
-            Ok(payload_len) => payload_len,
-            Err(_) => {
+        let record = match Record::new_data(
+            topic_index,
+            instance,
+            value.timestamp(),
+            &encoded[..encoded_len],
+        ) {
+            Some(record) => record,
+            None => {
                 self.dropped_total.fetch_add(1, Ordering::Relaxed);
                 return EmitStatus::Dropped;
             }
-        };
-
-        let record = Record::Data {
-            topic_index,
-            instance,
-            ts: value.timestamp(),
-            payload_len,
-            payload,
         };
 
         self.try_emit(record)
@@ -171,7 +218,14 @@ where
             return EmitStatus::Dropped;
         }
 
-        self.try_emit(Record::Parameter { key, value })
+        let record = match Record::new_parameter(key.as_bytes(), value) {
+            Some(record) => record,
+            None => {
+                self.dropped_total.fetch_add(1, Ordering::Relaxed);
+                return EmitStatus::Dropped;
+            }
+        };
+        self.try_emit(record)
     }
 
     fn try_emit(&mut self, record: Record<RECORD_CAP, MAX_MULTI_IDS>) -> EmitStatus {
@@ -185,11 +239,11 @@ where
     }
 }
 
-fn make_text<const RECORD_CAP: usize>(msg: &str) -> heapless::String<RECORD_CAP> {
+fn make_text<const RECORD_CAP: usize>(msg: &str) -> heapless::Vec<u8, RECORD_CAP> {
     debug_assert!(msg.is_ascii());
-    let mut text = heapless::String::new();
+    let mut text = heapless::Vec::new();
     let end = core::cmp::min(msg.len(), RECORD_CAP);
-    let _ = text.push_str(&msg[..end]);
+    let _ = text.extend_from_slice(&msg.as_bytes()[..end]);
     text
 }
 
@@ -311,5 +365,53 @@ mod tests {
         let mut producer = ULogProducer::<_, TestMessages, CAP, MI>::new(tx);
 
         assert_eq!(producer.parameter_i32("P", 1), EmitStatus::Emitted);
+    }
+
+    struct CaptureTxDefault {
+        records: RefCell<[Option<Record<CAP, 4>>; 2]>,
+        idx: RefCell<usize>,
+    }
+
+    impl Default for CaptureTxDefault {
+        fn default() -> Self {
+            Self {
+                records: RefCell::new([None, None]),
+                idx: RefCell::new(0),
+            }
+        }
+    }
+
+    impl RecordSink for CaptureTxDefault {
+        type Rec = Record<CAP, 4>;
+
+        fn try_send(&mut self, item: Self::Rec) -> Result<(), TrySendError> {
+            let i = *self.idx.borrow();
+            if i >= 2 {
+                return Err(TrySendError::Full);
+            }
+            self.records.borrow_mut()[i] = Some(item);
+            *self.idx.borrow_mut() = i + 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn default_max_multi_ids_accepts_instance_three() {
+        let tx = CaptureTxDefault::default();
+        let mut producer = ULogProducer::<_, TestMessages, CAP>::new(tx);
+
+        let status = producer.data_instance(&SampleData, 3);
+        assert_eq!(status, EmitStatus::Emitted);
+        assert_eq!(producer.dropped_count(), 0);
+    }
+
+    #[test]
+    fn default_max_multi_ids_rejects_instance_four() {
+        let tx = CaptureTxDefault::default();
+        let mut producer = ULogProducer::<_, TestMessages, CAP>::new(tx);
+
+        let status = producer.data_instance(&SampleData, 4);
+        assert_eq!(status, EmitStatus::Dropped);
+        assert_eq!(producer.dropped_count(), 1);
     }
 }

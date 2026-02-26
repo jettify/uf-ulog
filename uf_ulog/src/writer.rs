@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
 use crate::writer_common;
-use crate::{ExportError, ExportStep, ParameterValue, Record, ULogRegistry};
+use crate::{ExportError, ExportStep, ParameterValue, Record, RecordMeta, ULogRegistry};
 
 pub trait RecordSource {
     type Rec;
@@ -14,7 +14,7 @@ pub struct ULogExporter<
     Rx,
     R: ULogRegistry,
     const RECORD_CAP: usize = 256,
-    const MAX_MULTI_IDS: usize = 8,
+    const MAX_MULTI_IDS: usize = 4,
     const MAX_STREAMS: usize = 1024,
 > {
     writer: W,
@@ -88,25 +88,18 @@ where
         &mut self,
         record: Record<RECORD_CAP, MAX_MULTI_IDS>,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        match record {
-            Record::LoggedString {
-                level,
-                tag,
-                ts,
-                text,
-            } => {
+        match record.meta() {
+            RecordMeta::LoggedString { level, tag, ts } => {
                 if let Some(tag) = tag {
-                    self.write_tagged_log(level as u8, tag, ts, text.as_bytes())
+                    self.write_tagged_log(level as u8, tag, ts, record.bytes())
                 } else {
-                    self.write_log(level as u8, ts, text.as_bytes())
+                    self.write_log(level as u8, ts, record.bytes())
                 }
             }
-            Record::Data {
+            RecordMeta::Data {
                 topic_index,
                 instance,
                 ts: _,
-                payload_len,
-                payload,
             } => {
                 let topic_index_usize = usize::from(topic_index);
                 if usize::from(instance) >= MAX_MULTI_IDS {
@@ -138,13 +131,9 @@ where
                     self.subscribed[slot] = 1;
                 }
 
-                let data = writer_common::payload_with_len::<
-                    RECORD_CAP,
-                    <W as embedded_io::ErrorType>::Error,
-                >(&payload, payload_len)?;
-                self.write_data(msg_id, data)
+                self.write_data(msg_id, record.bytes())
             }
-            Record::Parameter { key, value } => self.write_parameter(key.as_bytes(), value),
+            RecordMeta::Parameter { value } => self.write_parameter(record.bytes(), value),
         }
     }
 
@@ -287,6 +276,16 @@ mod tests {
         }
     }
 
+    struct OneRxDefault(Option<Record<CAP, 4>>);
+
+    impl RecordSource for OneRxDefault {
+        type Rec = Record<CAP, 4>;
+
+        fn try_recv(&mut self) -> Option<Self::Rec> {
+            self.0.take()
+        }
+    }
+
     struct Sample;
 
     impl ULogData for Sample {
@@ -322,16 +321,7 @@ mod tests {
     #[test]
     fn startup_and_data_subscription() {
         let sink = VecSink::default();
-        let rec = Record::Data {
-            topic_index: 0,
-            instance: 1,
-            ts: 0,
-            payload_len: 4,
-            payload: [
-                1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0,
-            ],
-        };
+        let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4]).unwrap();
         let rx = OneRx(Some(rec));
         let mut exporter = ULogExporter::<_, _, TestMessages, CAP, MI, 64>::new(sink, rx);
 
@@ -342,15 +332,7 @@ mod tests {
     #[test]
     fn logs_string() {
         let sink = VecSink::default();
-        let mut text = heapless::String::<CAP>::new();
-        let _ = text.push_str("hello");
-
-        let rec = Record::LoggedString {
-            level: LogLevel::Info,
-            tag: None,
-            ts: 1,
-            text,
-        };
+        let rec = Record::new_log(LogLevel::Info, None, 1, b"hello");
         let rx = OneRx(Some(rec));
         let mut exporter = ULogExporter::<_, _, EmptyMessages, CAP, MI, 64>::new(sink, rx);
 
@@ -361,16 +343,7 @@ mod tests {
     #[test]
     fn dropped_streams_is_counted_when_streams_clamp() {
         let sink = VecSink::default();
-        let rec = Record::Data {
-            topic_index: 0,
-            instance: 0,
-            ts: 0,
-            payload_len: 4,
-            payload: [
-                1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0,
-            ],
-        };
+        let rec = Record::new_data(0, 0, 0, &[1, 2, 3, 4]).unwrap();
         let rx = OneRx(Some(rec));
         let mut exporter = ULogExporter::<_, _, TestMessages, CAP, MI, 0>::new(sink, rx);
 
@@ -382,16 +355,32 @@ mod tests {
     #[test]
     fn writes_parameter_message() {
         let sink = VecSink::default();
-        let mut key = heapless::String::<CAP>::new();
-        key.push_str("int32_t TEST_P").unwrap();
-        let rec = Record::Parameter {
-            key,
-            value: ParameterValue::I32(10),
-        };
+        let rec = Record::new_parameter(b"int32_t TEST_P", ParameterValue::I32(10)).unwrap();
         let rx = OneRx(Some(rec));
         let mut exporter = ULogExporter::<_, _, EmptyMessages, CAP, MI, 64>::new(sink, rx);
 
         exporter.emit_startup(0).unwrap();
         assert_eq!(exporter.poll_once().unwrap(), ExportStep::Progressed);
+    }
+
+    #[test]
+    fn default_max_multi_ids_accepts_instance_three() {
+        let sink = VecSink::default();
+        let rec = Record::new_data(0, 3, 0, &[1, 2, 3, 4]).unwrap();
+        let rx = OneRxDefault(Some(rec));
+        let mut exporter = ULogExporter::<_, _, TestMessages, CAP>::new(sink, rx);
+
+        exporter.emit_startup(0).unwrap();
+        assert_eq!(exporter.poll_once().unwrap(), ExportStep::Progressed);
+    }
+
+    #[test]
+    fn default_max_multi_ids_rejects_instance_four() {
+        let sink = VecSink::default();
+        let rx = OneRxDefault(None);
+        let mut exporter = ULogExporter::<_, _, TestMessages, CAP>::new(sink, rx);
+        let rec = Record::new_data(0, 4, 0, &[1, 2, 3, 4]).unwrap();
+
+        assert_eq!(exporter.write_record(rec), Err(ExportError::InvalidMultiId));
     }
 }

@@ -77,14 +77,7 @@ mod tests {
     #[test]
     fn send_and_recv_round_trip() {
         let (mut tx, mut rx) = channel::<CAP, MI>(1);
-        let mut text = heapless::String::<CAP>::new();
-        let _ = text.push_str("ok");
-        let record = Record::LoggedString {
-            level: LogLevel::Info,
-            tag: None,
-            ts: 1,
-            text,
-        };
+        let record = Record::new_log(LogLevel::Info, None, 1, b"ok");
 
         tx.try_send(record.clone()).unwrap();
         assert_eq!(rx.try_recv(), Some(record));
@@ -94,27 +87,13 @@ mod tests {
     fn full_and_closed_mapping() {
         let (raw_tx, raw_rx) = sync_channel::<Record<CAP, MI>>(1);
         let mut tx = ChannelTx::<CAP, MI>::new(raw_tx.clone());
-        let mut text = heapless::String::<CAP>::new();
-        let _ = text.push_str("x");
-        let record = Record::LoggedString {
-            level: LogLevel::Info,
-            tag: None,
-            ts: 0,
-            text,
-        };
+        let record = Record::new_log(LogLevel::Info, None, 0, b"x");
         tx.try_send(record.clone()).unwrap();
         assert_eq!(tx.try_send(record), Err(TrySendError::Full));
 
         drop(raw_rx);
         let mut closed_tx = ChannelTx::<CAP, MI>::new(raw_tx);
-        let mut text = heapless::String::<CAP>::new();
-        let _ = text.push_str("x");
-        let closed_record = Record::LoggedString {
-            level: LogLevel::Info,
-            tag: None,
-            ts: 0,
-            text,
-        };
+        let closed_record = Record::new_log(LogLevel::Info, None, 0, b"x");
         assert_eq!(closed_tx.try_send(closed_record), Err(TrySendError::Closed));
     }
 }
