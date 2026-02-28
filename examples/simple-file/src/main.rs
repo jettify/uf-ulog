@@ -105,7 +105,7 @@ fn main() -> std::io::Result<()> {
     };
 
     let (tx, rx) = adapters::std::channel::<RECORD_CAP, MAX_MULTI_IDS>(32);
-    let mut ulog = ULogProducer::<_, UlogDataMessages>::new(tx);
+    let mut ulog = ULogProducer::<_, UlogDataMessages, RECORD_CAP, MAX_MULTI_IDS>::new(tx);
 
     let timestamp = 1772079727637;
     ulog.parameter_f32("P", 1.5);

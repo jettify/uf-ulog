@@ -45,6 +45,99 @@ pub enum EncodeError {
     TopicConflict,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrySendError {
+    Full,
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParameterValue {
+    I32(i32),
+    F32(f32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordKind {
+    LoggedString,
+    Data,
+    Parameter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RecordMeta {
+    LoggedString {
+        level: LogLevel,
+        tag: Option<u16>,
+        ts: u64,
+    },
+    Data {
+        topic_index: u16,
+        instance: u8,
+        ts: u64,
+    },
+    Parameter {
+        value: ParameterValue,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Record<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+    meta: RecordMeta,
+    bytes: heapless::Vec<u8, RECORD_CAP>,
+}
+
+impl<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> Record<RECORD_CAP, MAX_MULTI_IDS> {
+    pub fn new_log(level: LogLevel, tag: Option<u16>, ts: u64, text: &[u8]) -> Self {
+        let mut bytes = heapless::Vec::new();
+        let end = core::cmp::min(text.len(), RECORD_CAP);
+        let _ = bytes.extend_from_slice(&text[..end]);
+        Self {
+            meta: RecordMeta::LoggedString { level, tag, ts },
+            bytes,
+        }
+    }
+
+    pub fn new_data(topic_index: u16, instance: u8, ts: u64, payload: &[u8]) -> Option<Self> {
+        let bytes = heapless::Vec::from_slice(payload).ok()?;
+        Some(Self {
+            meta: RecordMeta::Data {
+                topic_index,
+                instance,
+                ts,
+            },
+            bytes,
+        })
+    }
+
+    pub fn new_parameter(key: &[u8], value: ParameterValue) -> Option<Self> {
+        if key.len() > usize::from(u8::MAX) {
+            return None;
+        }
+        let bytes = heapless::Vec::from_slice(key).ok()?;
+        Some(Self {
+            meta: RecordMeta::Parameter { value },
+            bytes,
+        })
+    }
+
+    pub fn kind(&self) -> RecordKind {
+        match self.meta {
+            RecordMeta::LoggedString { .. } => RecordKind::LoggedString,
+            RecordMeta::Data { .. } => RecordKind::Data,
+            RecordMeta::Parameter { .. } => RecordKind::Parameter,
+        }
+    }
+
+    pub fn meta(&self) -> RecordMeta {
+        self.meta
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

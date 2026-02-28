@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use crate::writer_common;
+use crate::wire;
 use crate::{ExportError, ExportStep, ParameterValue, Record, RecordMeta, ULogRegistry};
 
 pub trait RecordSource {
@@ -106,11 +106,11 @@ where
                     return Err(ExportError::InvalidMultiId);
                 }
 
-                let meta = writer_common::registry_entry::<R, <W as embedded_io::ErrorType>::Error>(
+                let meta = wire::registry_entry::<R, <W as embedded_io::ErrorType>::Error>(
                     topic_index_usize,
                 )?;
 
-                let Some(slot) = writer_common::stream_slot::<MAX_MULTI_IDS>(
+                let Some(slot) = wire::stream_slot::<MAX_MULTI_IDS>(
                     topic_index_usize,
                     usize::from(instance),
                 ) else {
@@ -124,7 +124,7 @@ where
                 }
 
                 let msg_id =
-                    writer_common::slot_msg_id::<<W as embedded_io::ErrorType>::Error>(slot)?;
+                    wire::slot_msg_id::<<W as embedded_io::ErrorType>::Error>(slot)?;
 
                 if self.subscribed[slot] == 0 {
                     self.write_add_subscription(instance, msg_id, meta.name)?;
@@ -141,7 +141,7 @@ where
         &mut self,
         timestamp_micros: u64,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let header = writer_common::write_header(timestamp_micros);
+        let header = wire::write_header(timestamp_micros);
         self.write_all(&header)
     }
 
@@ -155,7 +155,7 @@ where
         name: &str,
         format: &str,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let _ = writer_common::format_payload_len::<<W as embedded_io::ErrorType>::Error>(
+        let _ = wire::format_payload_len::<<W as embedded_io::ErrorType>::Error>(
             name, format,
         )?;
         let separator = [b':'];
@@ -169,10 +169,10 @@ where
         msg_id: u16,
         name: &str,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let _ = writer_common::add_subscription_payload_len::<<W as embedded_io::ErrorType>::Error>(
+        let _ = wire::add_subscription_payload_len::<<W as embedded_io::ErrorType>::Error>(
             name,
         )?;
-        let prefix = writer_common::add_subscription_prefix(multi_id, msg_id);
+        let prefix = wire::add_subscription_prefix(multi_id, msg_id);
         let parts = [&prefix[..], name.as_bytes()];
         self.write_message_parts(b'A', &parts)
     }
@@ -183,8 +183,8 @@ where
         data: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         let _ =
-            writer_common::data_payload_len::<<W as embedded_io::ErrorType>::Error>(data.len())?;
-        let prefix = writer_common::data_prefix(msg_id);
+            wire::data_payload_len::<<W as embedded_io::ErrorType>::Error>(data.len())?;
+        let prefix = wire::data_prefix(msg_id);
         let parts = [&prefix[..], data];
         self.write_message_parts(b'D', &parts)
     }
@@ -195,8 +195,8 @@ where
         timestamp: u64,
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let _ = writer_common::log_payload_len::<<W as embedded_io::ErrorType>::Error>(text.len())?;
-        let prefix = writer_common::log_prefix(level, timestamp);
+        let _ = wire::log_payload_len::<<W as embedded_io::ErrorType>::Error>(text.len())?;
+        let prefix = wire::log_prefix(level, timestamp);
         let parts = [&prefix[..], text];
         self.write_message_parts(b'L', &parts)
     }
@@ -208,10 +208,10 @@ where
         timestamp: u64,
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let _ = writer_common::tagged_log_payload_len::<<W as embedded_io::ErrorType>::Error>(
+        let _ = wire::tagged_log_payload_len::<<W as embedded_io::ErrorType>::Error>(
             text.len(),
         )?;
-        let prefix = writer_common::tagged_log_prefix(level, tag, timestamp);
+        let prefix = wire::tagged_log_prefix(level, tag, timestamp);
         let parts = [&prefix[..], text];
         self.write_message_parts(b'C', &parts)
     }
@@ -225,10 +225,10 @@ where
             ParameterValue::I32(v) => v.to_le_bytes(),
             ParameterValue::F32(v) => v.to_le_bytes(),
         };
-        let _ = writer_common::parameter_payload_len::<<W as embedded_io::ErrorType>::Error>(
+        let _ = wire::parameter_payload_len::<<W as embedded_io::ErrorType>::Error>(
             key, &raw,
         )?;
-        let key_len = writer_common::parameter_prefix::<<W as embedded_io::ErrorType>::Error>(key)?;
+        let key_len = wire::parameter_prefix::<<W as embedded_io::ErrorType>::Error>(key)?;
         let parts = [&key_len[..], key, &raw];
         self.write_message_parts(b'P', &parts)
     }
@@ -238,7 +238,7 @@ where
         msg_type: u8,
         payload: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let header = writer_common::message_header(payload.len(), msg_type)?;
+        let header = wire::message_header(payload.len(), msg_type)?;
         self.write_all(&header)?;
         self.write_all(payload)
     }
@@ -250,9 +250,9 @@ where
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         let mut payload_len = 0usize;
         for part in parts {
-            payload_len = writer_common::checked_total_len(payload_len, part.len(), usize::MAX)?;
+            payload_len = wire::checked_total_len(payload_len, part.len(), usize::MAX)?;
         }
-        let header = writer_common::message_header(payload_len, msg_type)?;
+        let header = wire::message_header(payload_len, msg_type)?;
         self.write_all(&header)?;
         for part in parts {
             self.write_all(part)?;
