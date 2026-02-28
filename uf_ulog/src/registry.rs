@@ -62,6 +62,7 @@ impl Registry {
     }
 
     pub const fn get(&self, index: usize) -> Option<&MessageMeta> {
+        // self.entries.get(index) is not yet stable in const context
         if index >= self.entries.len() {
             None
         } else {
@@ -76,7 +77,8 @@ const fn str_eq(a: &str, b: &str) -> bool {
     if a_bytes.len() != b_bytes.len() {
         return false;
     }
-
+    // since this is const context a == b does not work
+    // we need to do comparison one char at time.
     let mut i = 0;
     while i < a_bytes.len() {
         if a_bytes[i] != b_bytes[i] {

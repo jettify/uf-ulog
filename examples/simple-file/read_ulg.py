@@ -5,8 +5,6 @@
 # ]
 # ///
 
-from __future__ import annotations
-
 import argparse
 
 from pyulog import ULog
@@ -54,4 +52,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    exit(main())
