@@ -155,9 +155,12 @@ where
         name: &str,
         format: &str,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let mut payload = [0u8; 512];
-        let total_len = writer_common::format_payload(&mut payload, name, format)?;
-        self.write_message(b'F', &payload[..total_len])
+        let _ = writer_common::format_payload_len::<<W as embedded_io::ErrorType>::Error>(
+            name, format,
+        )?;
+        let separator = [b':'];
+        let parts = [name.as_bytes(), &separator, format.as_bytes()];
+        self.write_message_parts(b'F', &parts)
     }
 
     fn write_add_subscription(
@@ -166,10 +169,12 @@ where
         msg_id: u16,
         name: &str,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let mut payload = [0u8; 256];
-        let total_len =
-            writer_common::add_subscription_payload(&mut payload, multi_id, msg_id, name)?;
-        self.write_message(b'A', &payload[..total_len])
+        let _ = writer_common::add_subscription_payload_len::<<W as embedded_io::ErrorType>::Error>(
+            name,
+        )?;
+        let prefix = writer_common::add_subscription_prefix(multi_id, msg_id);
+        let parts = [&prefix[..], name.as_bytes()];
+        self.write_message_parts(b'A', &parts)
     }
 
     fn write_data(
@@ -177,9 +182,11 @@ where
         msg_id: u16,
         data: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let mut payload = [0u8; 1024];
-        let total_len = writer_common::data_payload(&mut payload, msg_id, data)?;
-        self.write_message(b'D', &payload[..total_len])
+        let _ =
+            writer_common::data_payload_len::<<W as embedded_io::ErrorType>::Error>(data.len())?;
+        let prefix = writer_common::data_prefix(msg_id);
+        let parts = [&prefix[..], data];
+        self.write_message_parts(b'D', &parts)
     }
 
     fn write_log(
@@ -188,9 +195,10 @@ where
         timestamp: u64,
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let mut payload = [0u8; 512];
-        let total_len = writer_common::log_payload(&mut payload, level, timestamp, text)?;
-        self.write_message(b'L', &payload[..total_len])
+        let _ = writer_common::log_payload_len::<<W as embedded_io::ErrorType>::Error>(text.len())?;
+        let prefix = writer_common::log_prefix(level, timestamp);
+        let parts = [&prefix[..], text];
+        self.write_message_parts(b'L', &parts)
     }
 
     fn write_tagged_log(
@@ -200,10 +208,12 @@ where
         timestamp: u64,
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let mut payload = [0u8; 512];
-        let total_len =
-            writer_common::tagged_log_payload(&mut payload, level, tag, timestamp, text)?;
-        self.write_message(b'C', &payload[..total_len])
+        let _ = writer_common::tagged_log_payload_len::<<W as embedded_io::ErrorType>::Error>(
+            text.len(),
+        )?;
+        let prefix = writer_common::tagged_log_prefix(level, tag, timestamp);
+        let parts = [&prefix[..], text];
+        self.write_message_parts(b'C', &parts)
     }
 
     fn write_parameter(
@@ -211,13 +221,16 @@ where
         key: &[u8],
         value: ParameterValue,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let mut payload = [0u8; 512];
         let raw = match value {
             ParameterValue::I32(v) => v.to_le_bytes(),
             ParameterValue::F32(v) => v.to_le_bytes(),
         };
-        let total_len = writer_common::parameter_payload(&mut payload, key, &raw)?;
-        self.write_message(b'P', &payload[..total_len])
+        let _ = writer_common::parameter_payload_len::<<W as embedded_io::ErrorType>::Error>(
+            key, &raw,
+        )?;
+        let key_len = writer_common::parameter_prefix::<<W as embedded_io::ErrorType>::Error>(key)?;
+        let parts = [&key_len[..], key, &raw];
+        self.write_message_parts(b'P', &parts)
     }
 
     fn write_message(
@@ -228,6 +241,23 @@ where
         let header = writer_common::message_header(payload.len(), msg_type)?;
         self.write_all(&header)?;
         self.write_all(payload)
+    }
+
+    fn write_message_parts(
+        &mut self,
+        msg_type: u8,
+        parts: &[&[u8]],
+    ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
+        let mut payload_len = 0usize;
+        for part in parts {
+            payload_len = writer_common::checked_total_len(payload_len, part.len(), usize::MAX)?;
+        }
+        let header = writer_common::message_header(payload_len, msg_type)?;
+        self.write_all(&header)?;
+        for part in parts {
+            self.write_all(part)?;
+        }
+        Ok(())
     }
 
     fn write_all(
@@ -382,5 +412,33 @@ mod tests {
         let rec = Record::new_data(0, 4, 0, &[1, 2, 3, 4]).unwrap();
 
         assert_eq!(exporter.write_record(rec), Err(ExportError::InvalidMultiId));
+    }
+
+    #[test]
+    fn log_record_wire_bytes_match() {
+        let sink = VecSink::default();
+        let rx = OneRx(None);
+        let mut exporter = ULogExporter::<_, _, EmptyMessages, CAP, MI, 64>::new(sink, rx);
+        let rec = Record::new_log(LogLevel::Info, None, 0x0102_0304_0506_0708, b"hi");
+
+        exporter.write_record(rec).unwrap();
+        assert_eq!(
+            exporter.writer_mut().bytes,
+            [11, 0, b'L', b'6', 8, 7, 6, 5, 4, 3, 2, 1, b'h', b'i']
+        );
+    }
+
+    #[test]
+    fn parameter_record_wire_bytes_match() {
+        let sink = VecSink::default();
+        let rx = OneRx(None);
+        let mut exporter = ULogExporter::<_, _, EmptyMessages, CAP, MI, 64>::new(sink, rx);
+        let rec = Record::new_parameter(b"k", ParameterValue::I32(1)).unwrap();
+
+        exporter.write_record(rec).unwrap();
+        assert_eq!(
+            exporter.writer_mut().bytes,
+            [6, 0, b'P', 1, b'k', 1, 0, 0, 0]
+        );
     }
 }
