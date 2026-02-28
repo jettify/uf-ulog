@@ -95,9 +95,9 @@ mod tests {
         let mut tx2 = QueueTx::new(&queue);
 
         tx1.try_send(Record::new_log(LogLevel::Info, None, 1, b"a"))
-        .unwrap();
+            .unwrap();
         tx2.try_send(Record::new_log(LogLevel::Info, None, 2, b"b"))
-        .unwrap();
+            .unwrap();
 
         assert!(rx.try_recv().is_some());
         assert!(rx.try_recv().is_some());

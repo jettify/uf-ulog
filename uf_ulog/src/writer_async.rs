@@ -166,9 +166,12 @@ where
         name: &str,
         format: &str,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let mut payload = [0u8; 512];
-        let total_len = writer_common::format_payload(&mut payload, name, format)?;
-        self.write_message(b'F', &payload[..total_len]).await
+        let _ = writer_common::format_payload_len::<<W as embedded_io_async::ErrorType>::Error>(
+            name, format,
+        )?;
+        let separator = [b':'];
+        let parts = [name.as_bytes(), &separator, format.as_bytes()];
+        self.write_message_parts(b'F', &parts).await
     }
 
     async fn write_add_subscription(
@@ -177,10 +180,12 @@ where
         msg_id: u16,
         name: &str,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let mut payload = [0u8; 256];
-        let total_len =
-            writer_common::add_subscription_payload(&mut payload, multi_id, msg_id, name)?;
-        self.write_message(b'A', &payload[..total_len]).await
+        let _ = writer_common::add_subscription_payload_len::<
+            <W as embedded_io_async::ErrorType>::Error,
+        >(name)?;
+        let prefix = writer_common::add_subscription_prefix(multi_id, msg_id);
+        let parts = [&prefix[..], name.as_bytes()];
+        self.write_message_parts(b'A', &parts).await
     }
 
     async fn write_data(
@@ -188,9 +193,12 @@ where
         msg_id: u16,
         data: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let mut payload = [0u8; 1024];
-        let total_len = writer_common::data_payload(&mut payload, msg_id, data)?;
-        self.write_message(b'D', &payload[..total_len]).await
+        let _ = writer_common::data_payload_len::<<W as embedded_io_async::ErrorType>::Error>(
+            data.len(),
+        )?;
+        let prefix = writer_common::data_prefix(msg_id);
+        let parts = [&prefix[..], data];
+        self.write_message_parts(b'D', &parts).await
     }
 
     async fn write_log(
@@ -199,9 +207,12 @@ where
         timestamp: u64,
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let mut payload = [0u8; 512];
-        let total_len = writer_common::log_payload(&mut payload, level, timestamp, text)?;
-        self.write_message(b'L', &payload[..total_len]).await
+        let _ = writer_common::log_payload_len::<<W as embedded_io_async::ErrorType>::Error>(
+            text.len(),
+        )?;
+        let prefix = writer_common::log_prefix(level, timestamp);
+        let parts = [&prefix[..], text];
+        self.write_message_parts(b'L', &parts).await
     }
 
     async fn write_tagged_log(
@@ -211,10 +222,12 @@ where
         timestamp: u64,
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let mut payload = [0u8; 512];
-        let total_len =
-            writer_common::tagged_log_payload(&mut payload, level, tag, timestamp, text)?;
-        self.write_message(b'C', &payload[..total_len]).await
+        let _ = writer_common::tagged_log_payload_len::<<W as embedded_io_async::ErrorType>::Error>(
+            text.len(),
+        )?;
+        let prefix = writer_common::tagged_log_prefix(level, tag, timestamp);
+        let parts = [&prefix[..], text];
+        self.write_message_parts(b'C', &parts).await
     }
 
     async fn write_parameter(
@@ -222,13 +235,17 @@ where
         key: &[u8],
         value: ParameterValue,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let mut payload = [0u8; 512];
         let raw = match value {
             ParameterValue::I32(v) => v.to_le_bytes(),
             ParameterValue::F32(v) => v.to_le_bytes(),
         };
-        let total_len = writer_common::parameter_payload(&mut payload, key, &raw)?;
-        self.write_message(b'P', &payload[..total_len]).await
+        let _ = writer_common::parameter_payload_len::<<W as embedded_io_async::ErrorType>::Error>(
+            key, &raw,
+        )?;
+        let key_len =
+            writer_common::parameter_prefix::<<W as embedded_io_async::ErrorType>::Error>(key)?;
+        let parts = [&key_len[..], key, &raw];
+        self.write_message_parts(b'P', &parts).await
     }
 
     async fn write_message(
@@ -239,6 +256,23 @@ where
         let header = writer_common::message_header(payload.len(), msg_type)?;
         self.write_all(&header).await?;
         self.write_all(payload).await
+    }
+
+    async fn write_message_parts(
+        &mut self,
+        msg_type: u8,
+        parts: &[&[u8]],
+    ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
+        let mut payload_len = 0usize;
+        for part in parts {
+            payload_len = writer_common::checked_total_len(payload_len, part.len(), usize::MAX)?;
+        }
+        let header = writer_common::message_header(payload_len, msg_type)?;
+        self.write_all(&header).await?;
+        for part in parts {
+            self.write_all(part).await?;
+        }
+        Ok(())
     }
 
     async fn write_all(
