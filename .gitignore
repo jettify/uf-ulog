@@ -1,2 +1,5 @@
 /target
 lcov.info
+*.pyc
+__pycache__
+out.ulg

@@ -80,3 +80,11 @@ ci:
 [group('test')]
 examples:
   cargo run -p uf_ulog --example simple
+
+# Run examples
+[group('test')]
+demo:
+  @echo "Writing file with uf_ulog"
+  cargo run --manifest-path ./examples/simple-file/Cargo.toml
+  @echo "Reding file with pyulog"
+  uv run ./examples/simple-file/read_ulg.py
