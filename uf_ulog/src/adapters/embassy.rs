@@ -1,7 +1,7 @@
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender, TrySendError as ChannelTrySendError};
 
-use crate::writer_async::AsyncRecordSource;
+use crate::AsyncRecordSource;
 use crate::{Record, RecordSink, TrySendError};
 
 pub struct ChannelTx<

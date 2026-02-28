@@ -1,5 +1,19 @@
-use crate::export::ExportError;
 use crate::{MessageMeta, ULogRegistry};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportStep {
+    Progressed,
+    Idle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportError<WriteError> {
+    Write(WriteError),
+    InvalidTopicIndex,
+    InvalidMultiId,
+    TooManyStreams,
+    MessageTooLarge,
+}
 
 const ULOG_HEADER_MAGIC: [u8; 8] = [0x55, 0x4c, 0x6f, 0x67, 0x01, 0x12, 0x35, 0x01];
 
