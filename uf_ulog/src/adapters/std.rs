@@ -4,7 +4,7 @@ use std::sync::mpsc::{TryRecvError as ChannelTryRecvError, TrySendError as Chann
 
 use crate::{Record, RecordSink, RecordSource, TrySendError};
 
-pub struct ChannelTx<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+pub struct ChannelTx<const RECORD_CAP: usize = 128, const MAX_MULTI_IDS: usize = 4> {
     tx: SyncSender<Record<RECORD_CAP, MAX_MULTI_IDS>>,
 }
 
@@ -28,7 +28,7 @@ impl<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> RecordSink
     }
 }
 
-pub struct ChannelRx<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+pub struct ChannelRx<const RECORD_CAP: usize = 128, const MAX_MULTI_IDS: usize = 4> {
     rx: Receiver<Record<RECORD_CAP, MAX_MULTI_IDS>>,
     _pd: PhantomData<Record<RECORD_CAP, MAX_MULTI_IDS>>,
 }

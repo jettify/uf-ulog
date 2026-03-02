@@ -58,10 +58,6 @@ pub enum UlogDataMessages {
     Test,
 }
 
-const RECORD_CAP: usize = 128;
-const MAX_MULTI_IDS: usize = 4;
-const MAX_STREAMS: usize = RECORD_CAP * MAX_MULTI_IDS;
-
 fn map_export_error(err: ExportError<std::io::Error>) -> std::io::Error {
     match err {
         ExportError::Write(io_err) => io_err,
@@ -104,8 +100,8 @@ fn main() -> std::io::Result<()> {
         x11: true,
     };
 
-    let (tx, rx) = adapters::std::channel::<RECORD_CAP, MAX_MULTI_IDS>(32);
-    let mut ulog = ULogProducer::<_, UlogDataMessages, RECORD_CAP, MAX_MULTI_IDS>::new(tx);
+    let (tx, rx) = adapters::std::channel(32);
+    let mut ulog = ULogProducer::<_, UlogDataMessages>::new(tx);
 
     let timestamp = 1772079727637;
     ulog.parameter_f32("P", 1.5);
@@ -129,10 +125,7 @@ fn main() -> std::io::Result<()> {
 
     let writer = FromStd::new(File::create("out.ulg")?);
 
-    let mut exporter =
-        ULogExporter::<_, _, UlogDataMessages, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>::new(
-            writer, rx,
-        );
+    let mut exporter = ULogExporter::<_, _, UlogDataMessages>::new(writer, rx);
     exporter.emit_startup(0).map_err(map_export_error)?;
     while let Ok(v) = exporter.poll_once().map_err(map_export_error) {
         match v {

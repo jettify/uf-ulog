@@ -1,6 +1,11 @@
 use crate::{Record, RecordSink, RecordSource, TrySendError};
 
-pub struct QueueTx<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+pub struct QueueTx<
+    'a,
+    const N: usize,
+    const RECORD_CAP: usize = 128,
+    const MAX_MULTI_IDS: usize = 4,
+> {
     queue: &'a heapless::mpmc::Queue<Record<RECORD_CAP, MAX_MULTI_IDS>, N>,
 }
 
@@ -23,7 +28,12 @@ impl<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> Re
 }
 
 #[derive(Clone, Copy)]
-pub struct QueueRx<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+pub struct QueueRx<
+    'a,
+    const N: usize,
+    const RECORD_CAP: usize = 128,
+    const MAX_MULTI_IDS: usize = 4,
+> {
     queue: &'a heapless::mpmc::Queue<Record<RECORD_CAP, MAX_MULTI_IDS>, N>,
 }
 
@@ -45,7 +55,12 @@ impl<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> Re
     }
 }
 
-pub fn bind<'a, const N: usize, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize>(
+pub fn bind<
+    'a,
+    const N: usize,
+    const RECORD_CAP: usize,
+    const MAX_MULTI_IDS: usize,
+>(
     queue: &'a heapless::mpmc::Queue<Record<RECORD_CAP, MAX_MULTI_IDS>, N>,
 ) -> (
     QueueTx<'a, N, RECORD_CAP, MAX_MULTI_IDS>,

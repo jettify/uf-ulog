@@ -13,9 +13,9 @@ pub struct ULogExporter<
     W,
     Rx,
     R: ULogRegistry,
-    const RECORD_CAP: usize = 256,
+    const RECORD_CAP: usize = 128,
     const MAX_MULTI_IDS: usize = 4,
-    const MAX_STREAMS: usize = 1024,
+    const MAX_STREAMS: usize = 128,
 > {
     writer: W,
     rx: Rx,
