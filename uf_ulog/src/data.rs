@@ -82,12 +82,12 @@ pub enum RecordMeta {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Record<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> {
+pub struct Record<const RECORD_CAP: usize> {
     meta: RecordMeta,
     bytes: heapless::Vec<u8, RECORD_CAP>,
 }
 
-impl<const RECORD_CAP: usize, const MAX_MULTI_IDS: usize> Record<RECORD_CAP, MAX_MULTI_IDS> {
+impl<const RECORD_CAP: usize> Record<RECORD_CAP> {
     pub fn new_log(level: LogLevel, tag: Option<u16>, ts: u64, text: &[u8]) -> Self {
         let mut bytes = heapless::Vec::new();
         let end = core::cmp::min(text.len(), RECORD_CAP);

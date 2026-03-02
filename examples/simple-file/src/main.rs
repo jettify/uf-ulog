@@ -1,12 +1,10 @@
 use embedded_io_adapters::std::FromStd;
 use std::fs::File;
 
-use uf_ulog::adapters;
 use uf_ulog::ExportError;
-use uf_ulog::ExportStep;
 use uf_ulog::LogLevel;
+use uf_ulog::ULogCoreExporter;
 use uf_ulog::ULogData;
-use uf_ulog::ULogExporter;
 use uf_ulog::ULogProducer;
 use uf_ulog::ULogRegistry;
 
@@ -66,6 +64,8 @@ fn map_export_error(err: ExportError<std::io::Error>) -> std::io::Error {
 }
 
 fn main() -> std::io::Result<()> {
+    let producer = ULogProducer::<UlogDataMessages>::new();
+
     let g = Gyro {
         timestamp: 1772079727637,
         x: 1.0,
@@ -100,39 +100,63 @@ fn main() -> std::io::Result<()> {
         x11: true,
     };
 
-    let (tx, rx) = adapters::std::channel(32);
-    let mut ulog = ULogProducer::<_, UlogDataMessages>::new(tx);
-
     let timestamp = 1772079727637;
-    ulog.parameter_f32("P", 1.5);
-    ulog.parameter_f32("I", 0.01);
-    ulog.parameter_f32("D", 2.01);
-
-    ulog.data::<Gyro>(&g);
-    ulog.data::<Acc>(&a);
-    ulog.data::<Mag>(&m);
-    ulog.data::<Test>(&t);
-    ulog.parameter_f32("P", 0.5);
-    ulog.parameter_f32("I", 0.01);
-    ulog.parameter_f32("D", 2.01);
-    ulog.parameter_i32("SERVO_TRIM", 1500);
-
-    ulog.log_tagged(LogLevel::Info, 1, timestamp, "info tagged log");
-    ulog.log(LogLevel::Debug, timestamp, "This is debug log");
-    ulog.log(LogLevel::Emerg, timestamp, "This is Emerg log");
-    ulog.log(LogLevel::Alert, timestamp, "This is Alert log");
-    ulog.log(LogLevel::Notice, timestamp, "This is Notice log");
-
     let writer = FromStd::new(File::create("out.ulg")?);
+    let mut exporter = ULogCoreExporter::<_, UlogDataMessages>::new(writer)
+        .start(0)
+        .map_err(map_export_error)?;
 
-    let mut exporter = ULogExporter::<_, _, UlogDataMessages>::new(writer, rx);
-    exporter.emit_startup(0).map_err(map_export_error)?;
-    while let Ok(v) = exporter.poll_once().map_err(map_export_error) {
-        match v {
-            ExportStep::Progressed => {}
-            ExportStep::Idle => break,
-        }
-    }
+    exporter
+        .accept(producer.parameter_f32("P", 1.5).unwrap())
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.parameter_f32("I", 0.01).unwrap())
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.parameter_f32("D", 2.01).unwrap())
+        .map_err(map_export_error)?;
+
+    exporter
+        .accept(producer.data::<Gyro>(&g).unwrap())
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.data::<Acc>(&a).unwrap())
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.data::<Mag>(&m).unwrap())
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.data::<Test>(&t).unwrap())
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.parameter_f32("P", 0.5).unwrap())
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.parameter_f32("I", 0.01).unwrap())
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.parameter_f32("D", 2.01).unwrap())
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.parameter_i32("SERVO_TRIM", 1500).unwrap())
+        .map_err(map_export_error)?;
+
+    exporter
+        .accept(producer.log_tagged(LogLevel::Info, 1, timestamp, "info tagged log"))
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.log(LogLevel::Debug, timestamp, "This is debug log"))
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.log(LogLevel::Emerg, timestamp, "This is Emerg log"))
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.log(LogLevel::Alert, timestamp, "This is Alert log"))
+        .map_err(map_export_error)?;
+    exporter
+        .accept(producer.log(LogLevel::Notice, timestamp, "This is Notice log"))
+        .map_err(map_export_error)?;
+
     embedded_io::Write::flush(exporter.writer_mut())?;
     Ok(())
 }
