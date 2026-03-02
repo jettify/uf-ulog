@@ -10,10 +10,6 @@ use uf_ulog::ULogData;
 use uf_ulog::ULogProducer;
 use uf_ulog::ULogRegistry;
 
-const RECORD_CAP: usize = 128;
-const MAX_MULTI_IDS: usize = 8;
-const MAX_STREAMS: usize = 1024;
-
 #[derive(ULogData, Debug)]
 struct Acc {
     timestamp: u64,
@@ -60,15 +56,14 @@ fn main() {
 }
 
 async fn async_main() {
-    let channel: Channel<NoopRawMutex, uf_ulog::Record<RECORD_CAP, MAX_MULTI_IDS>, 32> =
-        Channel::new();
+    let channel: Channel<NoopRawMutex, uf_ulog::Record<128, 4>, 32> = Channel::new();
 
     let tx_a = adapters::embassy::ChannelTx::new(channel.sender());
     let tx_b = adapters::embassy::ChannelTx::new(channel.sender());
     let rx = adapters::embassy::ChannelRx::new(channel.receiver());
 
-    let mut producer_a = ULogProducer::<_, UlogDataMessages, RECORD_CAP, MAX_MULTI_IDS>::new(tx_a);
-    let mut producer_b = ULogProducer::<_, UlogDataMessages, RECORD_CAP, MAX_MULTI_IDS>::new(tx_b);
+    let mut producer_a = ULogProducer::<_, UlogDataMessages>::new(tx_a);
+    let mut producer_b = ULogProducer::<_, UlogDataMessages>::new(tx_b);
 
     let g = Gyro {
         timestamp: 10,
@@ -91,11 +86,7 @@ async fn async_main() {
     producer_a.log_tagged(LogLevel::Warning, 7, 102, "producer_a warn");
     producer_b.log_tagged(LogLevel::Err, 9, 103, "producer_b error");
 
-    let mut exporter =
-        ULogAsyncExporter::<_, _, UlogDataMessages, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>::new(
-            PrintWriter,
-            rx,
-        );
+    let mut exporter = ULogAsyncExporter::<_, _, UlogDataMessages>::new(PrintWriter, rx);
     exporter.emit_startup(0).await.unwrap();
 
     for _ in 0..7 {

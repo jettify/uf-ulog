@@ -8,10 +8,6 @@ use uf_ulog::ULogExporter;
 use uf_ulog::ULogProducer;
 use uf_ulog::ULogRegistry;
 
-const RECORD_CAP: usize = 128;
-const MAX_MULTI_IDS: usize = 8;
-const MAX_STREAMS: usize = 1024;
-
 #[derive(ULogData, Debug)]
 struct Acc {
     timestamp: u64,
@@ -99,8 +95,8 @@ fn main() {
         code: ErrorCodes::GenericError.code(),
     };
 
-    let (tx, rx) = adapters::std::channel::<RECORD_CAP, MAX_MULTI_IDS>(32);
-    let mut ulog = ULogProducer::<_, UlogDataMessages, RECORD_CAP, MAX_MULTI_IDS>::new(tx);
+    let (tx, rx) = adapters::std::channel(32);
+    let mut ulog = ULogProducer::<_, UlogDataMessages>::new(tx);
 
     ulog.data::<Gyro>(&g);
     ulog.data::<Acc>(&a);
@@ -110,11 +106,7 @@ fn main() {
     ulog.log(LogLevel::Info, 43, "info log");
     ulog.log_tagged(LogLevel::Info, 1, 43, "info log");
 
-    let mut exporter =
-        ULogExporter::<_, _, UlogDataMessages, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>::new(
-            PrintWriter,
-            rx,
-        );
+    let mut exporter = ULogExporter::<_, _, UlogDataMessages>::new(PrintWriter, rx);
     exporter.emit_startup(0).unwrap();
 
     loop {
