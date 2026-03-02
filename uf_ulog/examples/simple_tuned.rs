@@ -6,6 +6,10 @@ use uf_ulog::ULogData;
 use uf_ulog::ULogProducer;
 use uf_ulog::ULogRegistry;
 
+const RECORD_CAP: usize = 256;
+const MAX_MULTI_IDS: usize = 8;
+const MAX_STREAMS: usize = 256;
+
 #[derive(ULogData, Debug)]
 struct Acc {
     timestamp: u64,
@@ -67,8 +71,16 @@ impl embedded_io::Write for PrintWriter {
 }
 
 fn main() {
-    let producer = ULogProducer::<UlogDataMessages>::new();
-    let mut exporter = ULogCoreExporter::<_, UlogDataMessages>::new(PrintWriter)
+    println!(
+        "Using tuned 2x defaults: RECORD_CAP={}, MAX_MULTI_IDS={}, MAX_STREAMS={}",
+        RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS
+    );
+
+    let producer = ULogProducer::<UlogDataMessages, RECORD_CAP, MAX_MULTI_IDS>::new();
+    let mut exporter =
+        ULogCoreExporter::<_, UlogDataMessages, _, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>::new(
+            PrintWriter,
+        )
         .start(0)
         .unwrap();
 

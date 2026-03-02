@@ -1,48 +1,91 @@
 use core::marker::PhantomData;
 
 use crate::wire;
-use crate::{ExportError, ExportStep, ParameterValue, Record, RecordMeta, ULogRegistry};
+use crate::{ExportError, ParameterValue, Record, RecordMeta, ULogRegistry};
 
-pub trait RecordSource {
-    type Rec;
+pub struct FormatsPending;
+pub struct StreamingReady;
 
-    fn try_recv(&mut self) -> Option<Self::Rec>;
-}
-
-pub struct ULogExporter<
+pub struct ULogCoreExporter<
     W,
-    Rx,
     R: ULogRegistry,
+    State = FormatsPending,
     const RECORD_CAP: usize = 128,
     const MAX_MULTI_IDS: usize = 4,
     const MAX_STREAMS: usize = 128,
 > {
     writer: W,
-    rx: Rx,
-    started: bool,
     subscribed: [u8; MAX_STREAMS],
     dropped_streams: u32,
     _messages: PhantomData<R>,
+    _state: PhantomData<State>,
 }
 
-impl<W, Rx, R, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize, const MAX_STREAMS: usize>
-    ULogExporter<W, Rx, R, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>
+impl<W, R, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize, const MAX_STREAMS: usize>
+    ULogCoreExporter<W, R, FormatsPending, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>
 where
     W: embedded_io::Write,
-    Rx: RecordSource<Rec = Record<RECORD_CAP, MAX_MULTI_IDS>>,
     R: ULogRegistry,
 {
-    pub fn new(writer: W, rx: Rx) -> Self {
+    pub fn new(writer: W) -> Self {
         Self {
             writer,
-            rx,
-            started: false,
             subscribed: [0; MAX_STREAMS],
             dropped_streams: 0,
             _messages: PhantomData,
+            _state: PhantomData,
         }
     }
 
+    pub fn start(
+        mut self,
+        timestamp_micros: u64,
+    ) -> Result<
+        ULogCoreExporter<W, R, StreamingReady, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>,
+        ExportError<<W as embedded_io::ErrorType>::Error>,
+    > {
+        self.emit_startup(timestamp_micros)?;
+        Ok(self.into_streaming())
+    }
+
+    fn emit_startup(
+        &mut self,
+        timestamp_micros: u64,
+    ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
+        self.write_header(timestamp_micros)?;
+        self.write_flag_bits()?;
+        for meta in R::REGISTRY.entries {
+            self.write_format(meta.name, meta.format)?;
+        }
+
+        Ok(())
+    }
+
+    fn into_streaming(
+        self,
+    ) -> ULogCoreExporter<W, R, StreamingReady, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS> {
+        ULogCoreExporter {
+            writer: self.writer,
+            subscribed: self.subscribed,
+            dropped_streams: self.dropped_streams,
+            _messages: PhantomData,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl<
+        W,
+        R,
+        State,
+        const RECORD_CAP: usize,
+        const MAX_MULTI_IDS: usize,
+        const MAX_STREAMS: usize,
+    > ULogCoreExporter<W, R, State, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>
+where
+    W: embedded_io::Write,
+    R: ULogRegistry,
+{
     pub fn writer_mut(&mut self) -> &mut W {
         &mut self.writer
     }
@@ -51,42 +94,9 @@ where
         self.dropped_streams
     }
 
-    pub fn emit_startup(
+    fn write_record_inner(
         &mut self,
-        timestamp_micros: u64,
-    ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        if self.started {
-            return Ok(());
-        }
-
-        self.write_header(timestamp_micros)?;
-        self.write_flag_bits()?;
-        for meta in R::REGISTRY.entries {
-            self.write_format(meta.name, meta.format)?;
-        }
-
-        self.started = true;
-        Ok(())
-    }
-
-    pub fn poll_once(
-        &mut self,
-    ) -> Result<ExportStep, ExportError<<W as embedded_io::ErrorType>::Error>> {
-        if !self.started {
-            return Ok(ExportStep::Idle);
-        }
-
-        let Some(record) = self.rx.try_recv() else {
-            return Ok(ExportStep::Idle);
-        };
-
-        self.write_record(record)?;
-        Ok(ExportStep::Progressed)
-    }
-
-    pub fn write_record(
-        &mut self,
-        record: Record<RECORD_CAP, MAX_MULTI_IDS>,
+        record: Record<RECORD_CAP>,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         match record.meta() {
             RecordMeta::LoggedString { level, tag, ts } => {
@@ -110,10 +120,9 @@ where
                     topic_index_usize,
                 )?;
 
-                let Some(slot) = wire::stream_slot::<MAX_MULTI_IDS>(
-                    topic_index_usize,
-                    usize::from(instance),
-                ) else {
+                let Some(slot) =
+                    wire::stream_slot::<MAX_MULTI_IDS>(topic_index_usize, usize::from(instance))
+                else {
                     self.dropped_streams = self.dropped_streams.saturating_add(1);
                     return Ok(());
                 };
@@ -123,8 +132,7 @@ where
                     return Ok(());
                 }
 
-                let msg_id =
-                    wire::slot_msg_id::<<W as embedded_io::ErrorType>::Error>(slot)?;
+                let msg_id = wire::slot_msg_id::<<W as embedded_io::ErrorType>::Error>(slot)?;
 
                 if self.subscribed[slot] == 0 {
                     self.write_add_subscription(instance, msg_id, meta.name)?;
@@ -155,9 +163,7 @@ where
         name: &str,
         format: &str,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let _ = wire::format_payload_len::<<W as embedded_io::ErrorType>::Error>(
-            name, format,
-        )?;
+        let _ = wire::format_payload_len::<<W as embedded_io::ErrorType>::Error>(name, format)?;
         let separator = [b':'];
         let parts = [name.as_bytes(), &separator, format.as_bytes()];
         self.write_message_parts(b'F', &parts)
@@ -169,9 +175,7 @@ where
         msg_id: u16,
         name: &str,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let _ = wire::add_subscription_payload_len::<<W as embedded_io::ErrorType>::Error>(
-            name,
-        )?;
+        let _ = wire::add_subscription_payload_len::<<W as embedded_io::ErrorType>::Error>(name)?;
         let prefix = wire::add_subscription_prefix(multi_id, msg_id);
         let parts = [&prefix[..], name.as_bytes()];
         self.write_message_parts(b'A', &parts)
@@ -182,8 +186,7 @@ where
         msg_id: u16,
         data: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let _ =
-            wire::data_payload_len::<<W as embedded_io::ErrorType>::Error>(data.len())?;
+        let _ = wire::data_payload_len::<<W as embedded_io::ErrorType>::Error>(data.len())?;
         let prefix = wire::data_prefix(msg_id);
         let parts = [&prefix[..], data];
         self.write_message_parts(b'D', &parts)
@@ -208,9 +211,7 @@ where
         timestamp: u64,
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        let _ = wire::tagged_log_payload_len::<<W as embedded_io::ErrorType>::Error>(
-            text.len(),
-        )?;
+        let _ = wire::tagged_log_payload_len::<<W as embedded_io::ErrorType>::Error>(text.len())?;
         let prefix = wire::tagged_log_prefix(level, tag, timestamp);
         let parts = [&prefix[..], text];
         self.write_message_parts(b'C', &parts)
@@ -225,9 +226,7 @@ where
             ParameterValue::I32(v) => v.to_le_bytes(),
             ParameterValue::F32(v) => v.to_le_bytes(),
         };
-        let _ = wire::parameter_payload_len::<<W as embedded_io::ErrorType>::Error>(
-            key, &raw,
-        )?;
+        let _ = wire::parameter_payload_len::<<W as embedded_io::ErrorType>::Error>(key, &raw)?;
         let key_len = wire::parameter_prefix::<<W as embedded_io::ErrorType>::Error>(key)?;
         let parts = [&key_len[..], key, &raw];
         self.write_message_parts(b'P', &parts)
@@ -268,6 +267,20 @@ where
     }
 }
 
+impl<W, R, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize, const MAX_STREAMS: usize>
+    ULogCoreExporter<W, R, StreamingReady, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>
+where
+    W: embedded_io::Write,
+    R: ULogRegistry,
+{
+    pub fn accept(
+        &mut self,
+        record: Record<RECORD_CAP>,
+    ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
+        self.write_record_inner(record)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,26 +306,6 @@ mod tests {
 
         fn flush(&mut self) -> Result<(), Self::Error> {
             Ok(())
-        }
-    }
-
-    struct OneRx(Option<Record<CAP, MI>>);
-
-    impl RecordSource for OneRx {
-        type Rec = Record<CAP, MI>;
-
-        fn try_recv(&mut self) -> Option<Self::Rec> {
-            self.0.take()
-        }
-    }
-
-    struct OneRxDefault(Option<Record<CAP, 4>>);
-
-    impl RecordSource for OneRxDefault {
-        type Rec = Record<CAP, 4>;
-
-        fn try_recv(&mut self) -> Option<Self::Rec> {
-            self.0.take()
         }
     }
 
@@ -349,36 +342,48 @@ mod tests {
     }
 
     #[test]
+    fn core_start_then_accept() {
+        let sink = VecSink::default();
+        let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4]).unwrap();
+
+        let mut core = ULogCoreExporter::<_, TestMessages, FormatsPending, CAP, MI, 64>::new(sink)
+            .start(100)
+            .unwrap();
+
+        core.accept(rec).unwrap();
+    }
+
+    #[test]
     fn startup_and_data_subscription() {
         let sink = VecSink::default();
         let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4]).unwrap();
-        let rx = OneRx(Some(rec));
-        let mut exporter = ULogExporter::<_, _, TestMessages, CAP, MI, 64>::new(sink, rx);
-
-        exporter.emit_startup(100).unwrap();
-        assert_eq!(exporter.poll_once().unwrap(), ExportStep::Progressed);
+        let mut exporter =
+            ULogCoreExporter::<_, TestMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(100)
+                .unwrap();
+        exporter.accept(rec).unwrap();
     }
 
     #[test]
     fn logs_string() {
         let sink = VecSink::default();
         let rec = Record::new_log(LogLevel::Info, None, 1, b"hello");
-        let rx = OneRx(Some(rec));
-        let mut exporter = ULogExporter::<_, _, EmptyMessages, CAP, MI, 64>::new(sink, rx);
-
-        exporter.emit_startup(0).unwrap();
-        assert_eq!(exporter.poll_once().unwrap(), ExportStep::Progressed);
+        let mut exporter =
+            ULogCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .unwrap();
+        exporter.accept(rec).unwrap();
     }
 
     #[test]
     fn dropped_streams_is_counted_when_streams_clamp() {
         let sink = VecSink::default();
         let rec = Record::new_data(0, 0, 0, &[1, 2, 3, 4]).unwrap();
-        let rx = OneRx(Some(rec));
-        let mut exporter = ULogExporter::<_, _, TestMessages, CAP, MI, 0>::new(sink, rx);
-
-        exporter.emit_startup(0).unwrap();
-        assert_eq!(exporter.poll_once().unwrap(), ExportStep::Progressed);
+        let mut exporter =
+            ULogCoreExporter::<_, TestMessages, FormatsPending, CAP, MI, 0>::new(sink)
+                .start(0)
+                .unwrap();
+        exporter.accept(rec).unwrap();
         assert_eq!(exporter.dropped_streams(), 1);
     }
 
@@ -386,59 +391,63 @@ mod tests {
     fn writes_parameter_message() {
         let sink = VecSink::default();
         let rec = Record::new_parameter(b"int32_t TEST_P", ParameterValue::I32(10)).unwrap();
-        let rx = OneRx(Some(rec));
-        let mut exporter = ULogExporter::<_, _, EmptyMessages, CAP, MI, 64>::new(sink, rx);
-
-        exporter.emit_startup(0).unwrap();
-        assert_eq!(exporter.poll_once().unwrap(), ExportStep::Progressed);
+        let mut exporter =
+            ULogCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .unwrap();
+        exporter.accept(rec).unwrap();
     }
 
     #[test]
     fn default_max_multi_ids_accepts_instance_three() {
         let sink = VecSink::default();
         let rec = Record::new_data(0, 3, 0, &[1, 2, 3, 4]).unwrap();
-        let rx = OneRxDefault(Some(rec));
-        let mut exporter = ULogExporter::<_, _, TestMessages, CAP>::new(sink, rx);
-
-        exporter.emit_startup(0).unwrap();
-        assert_eq!(exporter.poll_once().unwrap(), ExportStep::Progressed);
+        let mut exporter = ULogCoreExporter::<_, TestMessages, FormatsPending, CAP>::new(sink)
+            .start(0)
+            .unwrap();
+        exporter.accept(rec).unwrap();
     }
 
     #[test]
-    fn default_max_multi_ids_rejects_instance_four() {
+    fn default_max_multi_ids_rejects_instance_four_after_startup() {
         let sink = VecSink::default();
-        let rx = OneRxDefault(None);
-        let mut exporter = ULogExporter::<_, _, TestMessages, CAP>::new(sink, rx);
+        let mut exporter = ULogCoreExporter::<_, TestMessages, FormatsPending, CAP>::new(sink)
+            .start(0)
+            .unwrap();
         let rec = Record::new_data(0, 4, 0, &[1, 2, 3, 4]).unwrap();
 
-        assert_eq!(exporter.write_record(rec), Err(ExportError::InvalidMultiId));
+        assert_eq!(exporter.accept(rec), Err(ExportError::InvalidMultiId));
     }
 
     #[test]
     fn log_record_wire_bytes_match() {
         let sink = VecSink::default();
-        let rx = OneRx(None);
-        let mut exporter = ULogExporter::<_, _, EmptyMessages, CAP, MI, 64>::new(sink, rx);
+        let mut exporter =
+            ULogCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .unwrap();
         let rec = Record::new_log(LogLevel::Info, None, 0x0102_0304_0506_0708, b"hi");
 
-        exporter.write_record(rec).unwrap();
-        assert_eq!(
-            exporter.writer_mut().bytes,
-            [11, 0, b'L', b'6', 8, 7, 6, 5, 4, 3, 2, 1, b'h', b'i']
-        );
+        exporter.accept(rec).unwrap();
+        assert!(exporter
+            .writer_mut()
+            .bytes
+            .ends_with(&[11, 0, b'L', b'6', 8, 7, 6, 5, 4, 3, 2, 1, b'h', b'i']));
     }
 
     #[test]
     fn parameter_record_wire_bytes_match() {
         let sink = VecSink::default();
-        let rx = OneRx(None);
-        let mut exporter = ULogExporter::<_, _, EmptyMessages, CAP, MI, 64>::new(sink, rx);
+        let mut exporter =
+            ULogCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .unwrap();
         let rec = Record::new_parameter(b"k", ParameterValue::I32(1)).unwrap();
 
-        exporter.write_record(rec).unwrap();
-        assert_eq!(
-            exporter.writer_mut().bytes,
-            [6, 0, b'P', 1, b'k', 1, 0, 0, 0]
-        );
+        exporter.accept(rec).unwrap();
+        assert!(exporter
+            .writer_mut()
+            .bytes
+            .ends_with(&[6, 0, b'P', 1, b'k', 1, 0, 0, 0]));
     }
 }

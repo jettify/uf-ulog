@@ -1,49 +1,89 @@
 use core::marker::PhantomData;
 
+use crate::exporter::{FormatsPending, StreamingReady};
 use crate::wire;
-use crate::{ExportError, ExportStep, ParameterValue, Record, RecordMeta, ULogRegistry};
+use crate::{ExportError, ParameterValue, Record, RecordMeta, ULogRegistry};
 
-#[allow(async_fn_in_trait)]
-pub trait AsyncRecordSource {
-    type Rec;
-
-    async fn recv(&mut self) -> Self::Rec;
-}
-
-pub struct ULogAsyncExporter<
+pub struct ULogAsyncCoreExporter<
     W,
-    Rx,
     R: ULogRegistry,
+    State = FormatsPending,
     const RECORD_CAP: usize = 128,
     const MAX_MULTI_IDS: usize = 4,
     const MAX_STREAMS: usize = 128,
 > {
     writer: W,
-    rx: Rx,
-    started: bool,
     subscribed: [u8; MAX_STREAMS],
     dropped_streams: u32,
     _messages: PhantomData<R>,
+    _state: PhantomData<State>,
 }
 
-impl<W, Rx, R, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize, const MAX_STREAMS: usize>
-    ULogAsyncExporter<W, Rx, R, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>
+impl<W, R, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize, const MAX_STREAMS: usize>
+    ULogAsyncCoreExporter<W, R, FormatsPending, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>
 where
     W: embedded_io_async::Write,
-    Rx: AsyncRecordSource<Rec = Record<RECORD_CAP, MAX_MULTI_IDS>>,
     R: ULogRegistry,
 {
-    pub fn new(writer: W, rx: Rx) -> Self {
+    pub fn new(writer: W) -> Self {
         Self {
             writer,
-            rx,
-            started: false,
             subscribed: [0; MAX_STREAMS],
             dropped_streams: 0,
             _messages: PhantomData,
+            _state: PhantomData,
         }
     }
 
+    pub async fn start(
+        mut self,
+        timestamp_micros: u64,
+    ) -> Result<
+        ULogAsyncCoreExporter<W, R, StreamingReady, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>,
+        ExportError<<W as embedded_io_async::ErrorType>::Error>,
+    > {
+        self.emit_startup(timestamp_micros).await?;
+        Ok(self.into_streaming())
+    }
+
+    async fn emit_startup(
+        &mut self,
+        timestamp_micros: u64,
+    ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
+        self.write_header(timestamp_micros).await?;
+        self.write_flag_bits().await?;
+        for meta in R::REGISTRY.entries {
+            self.write_format(meta.name, meta.format).await?;
+        }
+
+        Ok(())
+    }
+
+    fn into_streaming(
+        self,
+    ) -> ULogAsyncCoreExporter<W, R, StreamingReady, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS> {
+        ULogAsyncCoreExporter {
+            writer: self.writer,
+            subscribed: self.subscribed,
+            dropped_streams: self.dropped_streams,
+            _messages: PhantomData,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl<
+        W,
+        R,
+        State,
+        const RECORD_CAP: usize,
+        const MAX_MULTI_IDS: usize,
+        const MAX_STREAMS: usize,
+    > ULogAsyncCoreExporter<W, R, State, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>
+where
+    W: embedded_io_async::Write,
+    R: ULogRegistry,
+{
     pub fn writer_mut(&mut self) -> &mut W {
         &mut self.writer
     }
@@ -52,47 +92,9 @@ where
         self.dropped_streams
     }
 
-    pub async fn emit_startup(
+    async fn write_record_inner(
         &mut self,
-        timestamp_micros: u64,
-    ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        if self.started {
-            return Ok(());
-        }
-
-        self.write_header(timestamp_micros).await?;
-        self.write_flag_bits().await?;
-        for meta in R::REGISTRY.entries {
-            self.write_format(meta.name, meta.format).await?;
-        }
-
-        self.started = true;
-        Ok(())
-    }
-
-    pub async fn poll_once(
-        &mut self,
-    ) -> Result<ExportStep, ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        if !self.started {
-            return Ok(ExportStep::Idle);
-        }
-
-        let record = self.rx.recv().await;
-        self.write_record(record).await?;
-        Ok(ExportStep::Progressed)
-    }
-
-    pub async fn run(
-        &mut self,
-    ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        loop {
-            self.poll_once().await?;
-        }
-    }
-
-    pub async fn write_record(
-        &mut self,
-        record: Record<RECORD_CAP, MAX_MULTI_IDS>,
+        record: Record<RECORD_CAP>,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
         match record.meta() {
             RecordMeta::LoggedString { level, tag, ts } => {
@@ -113,15 +115,13 @@ where
                     return Err(ExportError::InvalidMultiId);
                 }
 
-                let meta = wire::registry_entry::<
-                    R,
-                    <W as embedded_io_async::ErrorType>::Error,
-                >(topic_index_usize)?;
-
-                let Some(slot) = wire::stream_slot::<MAX_MULTI_IDS>(
+                let meta = wire::registry_entry::<R, <W as embedded_io_async::ErrorType>::Error>(
                     topic_index_usize,
-                    usize::from(instance),
-                ) else {
+                )?;
+
+                let Some(slot) =
+                    wire::stream_slot::<MAX_MULTI_IDS>(topic_index_usize, usize::from(instance))
+                else {
                     self.dropped_streams = self.dropped_streams.saturating_add(1);
                     return Ok(());
                 };
@@ -131,8 +131,7 @@ where
                     return Ok(());
                 }
 
-                let msg_id =
-                    wire::slot_msg_id::<<W as embedded_io_async::ErrorType>::Error>(slot)?;
+                let msg_id = wire::slot_msg_id::<<W as embedded_io_async::ErrorType>::Error>(slot)?;
 
                 if self.subscribed[slot] == 0 {
                     self.write_add_subscription(instance, msg_id, meta.name)
@@ -166,9 +165,8 @@ where
         name: &str,
         format: &str,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let _ = wire::format_payload_len::<<W as embedded_io_async::ErrorType>::Error>(
-            name, format,
-        )?;
+        let _ =
+            wire::format_payload_len::<<W as embedded_io_async::ErrorType>::Error>(name, format)?;
         let separator = [b':'];
         let parts = [name.as_bytes(), &separator, format.as_bytes()];
         self.write_message_parts(b'F', &parts).await
@@ -180,9 +178,8 @@ where
         msg_id: u16,
         name: &str,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let _ = wire::add_subscription_payload_len::<
-            <W as embedded_io_async::ErrorType>::Error,
-        >(name)?;
+        let _ =
+            wire::add_subscription_payload_len::<<W as embedded_io_async::ErrorType>::Error>(name)?;
         let prefix = wire::add_subscription_prefix(multi_id, msg_id);
         let parts = [&prefix[..], name.as_bytes()];
         self.write_message_parts(b'A', &parts).await
@@ -193,9 +190,7 @@ where
         msg_id: u16,
         data: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let _ = wire::data_payload_len::<<W as embedded_io_async::ErrorType>::Error>(
-            data.len(),
-        )?;
+        let _ = wire::data_payload_len::<<W as embedded_io_async::ErrorType>::Error>(data.len())?;
         let prefix = wire::data_prefix(msg_id);
         let parts = [&prefix[..], data];
         self.write_message_parts(b'D', &parts).await
@@ -207,9 +202,7 @@ where
         timestamp: u64,
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let _ = wire::log_payload_len::<<W as embedded_io_async::ErrorType>::Error>(
-            text.len(),
-        )?;
+        let _ = wire::log_payload_len::<<W as embedded_io_async::ErrorType>::Error>(text.len())?;
         let prefix = wire::log_prefix(level, timestamp);
         let parts = [&prefix[..], text];
         self.write_message_parts(b'L', &parts).await
@@ -222,9 +215,8 @@ where
         timestamp: u64,
         text: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        let _ = wire::tagged_log_payload_len::<<W as embedded_io_async::ErrorType>::Error>(
-            text.len(),
-        )?;
+        let _ =
+            wire::tagged_log_payload_len::<<W as embedded_io_async::ErrorType>::Error>(text.len())?;
         let prefix = wire::tagged_log_prefix(level, tag, timestamp);
         let parts = [&prefix[..], text];
         self.write_message_parts(b'C', &parts).await
@@ -239,11 +231,9 @@ where
             ParameterValue::I32(v) => v.to_le_bytes(),
             ParameterValue::F32(v) => v.to_le_bytes(),
         };
-        let _ = wire::parameter_payload_len::<<W as embedded_io_async::ErrorType>::Error>(
-            key, &raw,
-        )?;
-        let key_len =
-            wire::parameter_prefix::<<W as embedded_io_async::ErrorType>::Error>(key)?;
+        let _ =
+            wire::parameter_payload_len::<<W as embedded_io_async::ErrorType>::Error>(key, &raw)?;
+        let key_len = wire::parameter_prefix::<<W as embedded_io_async::ErrorType>::Error>(key)?;
         let parts = [&key_len[..], key, &raw];
         self.write_message_parts(b'P', &parts).await
     }
@@ -283,5 +273,19 @@ where
             .write_all(bytes)
             .await
             .map_err(ExportError::Write)
+    }
+}
+
+impl<W, R, const RECORD_CAP: usize, const MAX_MULTI_IDS: usize, const MAX_STREAMS: usize>
+    ULogAsyncCoreExporter<W, R, StreamingReady, RECORD_CAP, MAX_MULTI_IDS, MAX_STREAMS>
+where
+    W: embedded_io_async::Write,
+    R: ULogRegistry,
+{
+    pub async fn accept(
+        &mut self,
+        record: Record<RECORD_CAP>,
+    ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
+        self.write_record_inner(record).await
     }
 }
