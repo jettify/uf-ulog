@@ -6,7 +6,23 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
 publish = true
+description = "Allocator-free no_std ULog serializer for embedded systems"
+readme = "../README.md"
+documentation = "https://docs.rs/uf_ulog"
+keywords = ["ulog", "px4", "embedded", "logging", "no-std"]
+categories = ["embedded", "no-std", "encoding"]
+include = [
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/LICENSE",
+  "/src/**",
+  "/tests/**",
+  "/examples/**/*.rs",
+]
 
 
 [dependencies]
