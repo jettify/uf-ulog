@@ -7,6 +7,27 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "Derive macros for uf_ulog message and registry metadata"
+readme = "README.md"
+documentation = "https://docs.rs/uf_ulog_macro"
+keywords = ["ulog", "px4", "derive", "proc-macro", "embedded"]
+categories = [
+  "embedded",
+  "encoding",
+  "development-tools::procedural-macro-helpers",
+]
+exclude = ["*.profraw"]
+include = [
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/LICENSE",
+  "/src/**",
+  "/tests/**",
+  "/examples/**/*.rs",
+]
 
 [lib]
 proc-macro = true
