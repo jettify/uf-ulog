@@ -35,19 +35,19 @@ uf_ulog_macro = { path = "../uf_ulog_macro", optional = true }
 default = ["derive"]
 derive = ["dep:uf_ulog_macro"]
 async = ["dep:embedded-io-async"]
-std = []
 
 [dev-dependencies]
 futures = "0.3"
 
 [[example]]
 name = "simple"
-required-features = ["std"]
 
 [[example]]
 name = "simple_tuned"
-required-features = ["std"]
 
 [[example]]
 name = "simple_async"
-required-features = ["std", "async"]
+required-features = ["async"]
+
+[[example]]
+name = "minimal"
