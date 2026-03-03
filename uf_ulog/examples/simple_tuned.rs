@@ -101,23 +101,21 @@ fn main() {
         code: ErrorCodes::GenericError.code(),
     };
 
-    exporter.accept(producer.data::<Gyro>(&g).unwrap()).unwrap();
-    exporter.accept(producer.data::<Acc>(&a).unwrap()).unwrap();
-    exporter
-        .accept(producer.data_instance::<Acc>(&a, 1).unwrap())
-        .unwrap();
-    exporter
-        .accept(producer.data::<ErrorData>(&err_code).unwrap())
-        .unwrap();
-    exporter
-        .accept(producer.parameter_i32("SYS_LOGGER", 1).unwrap())
-        .unwrap();
-    exporter
-        .accept(producer.log(LogLevel::Info, 43, "info log"))
-        .unwrap();
-    exporter
-        .accept(producer.log_tagged(LogLevel::Info, 1, 43, "info log"))
-        .unwrap();
+    let record_data_gyro = producer.data::<Gyro>(&g).unwrap();
+    let record_data_acc = producer.data::<Acc>(&a).unwrap();
+    let record_data_acc_instance = producer.data_instance::<Acc>(&a, 1).unwrap();
+    let record_data_error = producer.data::<ErrorData>(&err_code).unwrap();
+    let record_param_sys_logger = producer.parameter_i32("SYS_LOGGER", 1).unwrap();
+    let record_log_info = producer.log(LogLevel::Info, 43, "info log");
+    let record_log_info_tagged = producer.log_tagged(LogLevel::Info, 1, 43, "info log");
+
+    exporter.accept(record_data_gyro).unwrap();
+    exporter.accept(record_data_acc).unwrap();
+    exporter.accept(record_data_acc_instance).unwrap();
+    exporter.accept(record_data_error).unwrap();
+    exporter.accept(record_param_sys_logger).unwrap();
+    exporter.accept(record_log_info).unwrap();
+    exporter.accept(record_log_info_tagged).unwrap();
 
     println!("done")
 }

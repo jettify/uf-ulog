@@ -73,26 +73,17 @@ async fn async_main() {
         .await
         .unwrap();
 
-    exporter
-        .accept(producer.log(LogLevel::Info, 100, "producer boot"))
-        .await
-        .unwrap();
-    exporter
-        .accept(producer.data::<Gyro>(&g).unwrap())
-        .await
-        .unwrap();
-    exporter
-        .accept(producer.data::<Acc>(&a).unwrap())
-        .await
-        .unwrap();
-    exporter
-        .accept(producer.parameter_i32("SYS_LOGGER", 1).unwrap())
-        .await
-        .unwrap();
-    exporter
-        .accept(producer.log_tagged(LogLevel::Warning, 7, 102, "warn"))
-        .await
-        .unwrap();
+    let record_log_boot = producer.log(LogLevel::Info, 100, "producer boot");
+    let record_data_gyro = producer.data::<Gyro>(&g).unwrap();
+    let record_data_acc = producer.data::<Acc>(&a).unwrap();
+    let record_param_sys_logger = producer.parameter_i32("SYS_LOGGER", 1).unwrap();
+    let record_log_warn_tagged = producer.log_tagged(LogLevel::Warning, 7, 102, "warn");
+
+    exporter.accept(record_log_boot).await.unwrap();
+    exporter.accept(record_data_gyro).await.unwrap();
+    exporter.accept(record_data_acc).await.unwrap();
+    exporter.accept(record_param_sys_logger).await.unwrap();
+    exporter.accept(record_log_warn_tagged).await.unwrap();
 
     println!("done");
 }
