@@ -79,9 +79,10 @@ ci:
 # Run examples
 [group('test')]
 examples:
-  cargo run -p uf_ulog --example simple --features std
-  cargo run -p uf_ulog --example simple_async --features "std async"
-  cargo run -p uf_ulog --example simple_tuned --features std
+  cargo run -p uf_ulog --example simple
+  cargo run -p uf_ulog --example simple_async --features async
+  cargo run -p uf_ulog --example simple_tuned
+  cargo run -p uf_ulog --example minimal
 
 # Run examples
 [group('test')]
