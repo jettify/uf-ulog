@@ -10,6 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 description = "Derive macros for uf_ulog message and registry metadata"
 readme = "README.md"
+license-file = "../LICENSE"
 documentation = "https://docs.rs/uf_ulog_macro"
 keywords = ["ulog", "px4", "derive", "proc-macro", "embedded"]
 categories = [
@@ -17,7 +18,6 @@ categories = [
   "encoding",
   "development-tools::procedural-macro-helpers",
 ]
-exclude = ["*.profraw"]
 include = [
   "/Cargo.toml",
   "/Cargo.lock",
