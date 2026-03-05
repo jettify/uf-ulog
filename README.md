@@ -121,7 +121,10 @@ fn main() {
     let record_data_acc_instance = producer.data_instance::<Acc>(&a, 1).unwrap();
     let record_log_info = producer.log(LogLevel::Info, 43, "info log");
     let record_log_info_tagged = producer.log_tagged(LogLevel::Info, 1, 43, "info log");
-
+    // Usually records produced by one task in non blocking fashion
+    // to make sure that control loops are fast as possible. Records
+    // then sent over channel to IO task, that may block or
+    // take longer to offload data over compatible bus/net.
     exporter.accept(record_data_gyro).unwrap();
     exporter.accept(record_data_acc_instance).unwrap();
     exporter.accept(record_log_info).unwrap();

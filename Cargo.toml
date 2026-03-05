@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.package]
 rust-version = "1.87"
 edition = "2021"
-license = "Apache-2.0"
+license-file = "LICENSE"
 authors = ["Mykola Novik <mykola@uflight.dev>"]
 repository = "https://github.com/jettify/uf-ulog"
 homepage = "https://github.com/jettify/uf-ulog"
