@@ -2,7 +2,7 @@
     clippy::needless_doctest_main,
     reason = "This is readme example, not doctest"
 )]
-#![doc = include_str!("../../README.md")]
+#![doc = include_str!("../README.md")]
 extern crate self as uf_ulog;
 
 #[cfg(feature = "derive")]
