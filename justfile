@@ -91,3 +91,8 @@ demo:
   cargo run --manifest-path ./examples/simple-file/Cargo.toml
   @echo "Reding file with pyulog"
   uv run ./examples/simple-file/read_ulg.py
+
+# Run Embassy std executor file example
+[group('test')]
+demo_embassy:
+  cargo run --manifest-path ./examples/embassy-tasks-file/Cargo.toml
