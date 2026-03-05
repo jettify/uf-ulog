@@ -1,0 +1,13 @@
+[package]
+name = "embassy-tasks-file"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embassy-sync = "0.7"
+critical-section = { version = "1", features = ["std"] }
+embedded-io-async = { version = "0.6", features = ["std"] }
+futures = { version = "0.3", default-features = false, features = ["executor", "async-await"] }
+uf_ulog = { path = "../../uf_ulog", features = ["derive", "async"] }
+
+[workspace]
