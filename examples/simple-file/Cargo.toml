@@ -6,6 +6,6 @@ edition = "2021"
 [dependencies]
 embedded-io = { version = "0.6", features = ["std"] }
 embedded-io-adapters = { version = "0.6", features = ["std"] }
-uf_ulog = { path = "../../uf_ulog", features = ["std", "derive"] }
+uf_ulog = { path = "../../uf_ulog", features = ["derive"] }
 
 [workspace]

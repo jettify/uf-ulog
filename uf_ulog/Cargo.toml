@@ -10,6 +10,7 @@ homepage.workspace = true
 publish = true
 description = "Allocator-free no_std ULog serializer for embedded systems"
 readme = "../README.md"
+license-file = "../LICENSE"
 documentation = "https://docs.rs/uf_ulog"
 keywords = ["ulog", "px4", "embedded", "logging", "no-std"]
 categories = ["embedded", "no-std", "encoding"]
@@ -29,7 +30,7 @@ include = [
 embedded-io = "0.6"
 embedded-io-async = { version = "0.6", optional = true }
 heapless = "0.9.2"
-uf_ulog_macro = { path = "../uf_ulog_macro", optional = true }
+uf_ulog_macro = { version = "0.1.0", path = "../uf_ulog_macro", optional = true }
 
 [features]
 default = ["derive"]
