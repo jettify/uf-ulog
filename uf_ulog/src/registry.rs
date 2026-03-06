@@ -43,9 +43,10 @@ impl Registry {
         while i < entries.len() {
             let mut j = i + 1;
             while j < entries.len() {
-                if str_eq(entries[i].name, entries[j].name) {
-                    panic!("duplicate ULog message name in registry");
-                }
+                assert!(
+                    !str_eq(entries[i].name, entries[j].name),
+                    "duplicate ULog message name in registry"
+                );
                 j += 1;
             }
             i += 1;

@@ -158,6 +158,10 @@ where
         self.write_message(b'B', &payload)
     }
 
+    fn write_sync(&mut self) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
+        self.write_message(b'S', &wire::ULOG_SYNC_MAGIC)
+    }
+
     fn write_format(
         &mut self,
         name: &str,
@@ -278,6 +282,10 @@ where
         record: Record<RECORD_CAP>,
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         self.write_record_inner(record)
+    }
+
+    pub fn emit_sync(&mut self) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
+        self.write_sync()
     }
 }
 
@@ -449,5 +457,21 @@ mod tests {
             .writer_mut()
             .bytes
             .ends_with(&[6, 0, b'P', 1, b'k', 1, 0, 0, 0]));
+    }
+
+    #[test]
+    fn test_sync_message() {
+        let sink = VecSink::default();
+        let rec = Record::new_parameter(b"int32_t TEST_P", ParameterValue::I32(10)).unwrap();
+        let mut exporter =
+            ULogCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .unwrap();
+
+        exporter.accept(rec).unwrap();
+        exporter.emit_sync().unwrap();
+
+        let expected = [0x2F, 0x73, 0x13, 0x20, 0x25, 0x0C, 0xBB, 0x12];
+        assert!(exporter.writer_mut().bytes.ends_with(&expected));
     }
 }

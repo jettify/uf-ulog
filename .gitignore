@@ -4,3 +4,5 @@ lcov.info
 __pycache__
 out.ulg
 *.profraw
+out.ulg
+out_embassy.ulg
