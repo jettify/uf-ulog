@@ -118,6 +118,9 @@ where
                 let meta = wire::registry_entry::<R, <W as embedded_io_async::ErrorType>::Error>(
                     topic_index_usize,
                 )?;
+                if record.bytes().len() != meta.wire_size {
+                    return Err(ExportError::InvalidWireSize);
+                }
 
                 let Some(slot) =
                     wire::stream_slot::<MAX_MULTI_IDS>(topic_index_usize, usize::from(instance))
