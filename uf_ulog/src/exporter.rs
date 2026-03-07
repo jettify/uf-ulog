@@ -119,6 +119,9 @@ where
                 let meta = wire::registry_entry::<R, <W as embedded_io::ErrorType>::Error>(
                     topic_index_usize,
                 )?;
+                if record.bytes().len() != meta.wire_size {
+                    return Err(ExportError::InvalidWireSize);
+                }
 
                 let Some(slot) =
                     wire::stream_slot::<MAX_MULTI_IDS>(topic_index_usize, usize::from(instance))
@@ -352,7 +355,7 @@ mod tests {
     #[test]
     fn core_start_then_accept() {
         let sink = VecSink::default();
-        let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4]).unwrap();
+        let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
 
         let mut core = ULogCoreExporter::<_, TestMessages, FormatsPending, CAP, MI, 64>::new(sink)
             .start(100)
@@ -364,7 +367,7 @@ mod tests {
     #[test]
     fn startup_and_data_subscription() {
         let sink = VecSink::default();
-        let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4]).unwrap();
+        let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
         let mut exporter =
             ULogCoreExporter::<_, TestMessages, FormatsPending, CAP, MI, 64>::new(sink)
                 .start(100)
@@ -386,7 +389,7 @@ mod tests {
     #[test]
     fn dropped_streams_is_counted_when_streams_clamp() {
         let sink = VecSink::default();
-        let rec = Record::new_data(0, 0, 0, &[1, 2, 3, 4]).unwrap();
+        let rec = Record::new_data(0, 0, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
         let mut exporter =
             ULogCoreExporter::<_, TestMessages, FormatsPending, CAP, MI, 0>::new(sink)
                 .start(0)
@@ -406,10 +409,32 @@ mod tests {
         exporter.accept(rec).unwrap();
     }
 
+    enum MismatchMessages {}
+
+    impl crate::ULogRegistry for MismatchMessages {
+        const REGISTRY: crate::Registry = crate::Registry::new(&[crate::MessageMeta {
+            name: "sample",
+            format: "uint64_t timestamp;",
+            wire_size: 8,
+        }]);
+    }
+
+    #[test]
+    fn data_wire_size_mismatch_rejected() {
+        let sink = VecSink::default();
+        let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4]).unwrap();
+        let mut exporter =
+            ULogCoreExporter::<_, MismatchMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .unwrap();
+
+        assert_eq!(exporter.accept(rec), Err(ExportError::InvalidWireSize));
+    }
+
     #[test]
     fn default_max_multi_ids_accepts_instance_three() {
         let sink = VecSink::default();
-        let rec = Record::new_data(0, 3, 0, &[1, 2, 3, 4]).unwrap();
+        let rec = Record::new_data(0, 3, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
         let mut exporter = ULogCoreExporter::<_, TestMessages, FormatsPending, CAP>::new(sink)
             .start(0)
             .unwrap();
@@ -422,7 +447,7 @@ mod tests {
         let mut exporter = ULogCoreExporter::<_, TestMessages, FormatsPending, CAP>::new(sink)
             .start(0)
             .unwrap();
-        let rec = Record::new_data(0, 4, 0, &[1, 2, 3, 4]).unwrap();
+        let rec = Record::new_data(0, 4, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
 
         assert_eq!(exporter.accept(rec), Err(ExportError::InvalidMultiId));
     }

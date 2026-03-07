@@ -10,6 +10,7 @@ pub enum ExportStep {
 pub enum ExportError<WriteError> {
     Write(WriteError),
     InvalidTopicIndex,
+    InvalidWireSize,
     InvalidMultiId,
     TooManyStreams,
     MessageTooLarge,

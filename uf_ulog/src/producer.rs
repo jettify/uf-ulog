@@ -6,6 +6,7 @@ use crate::{EncodeError, LogLevel, ParameterValue, Record, TopicOf, ULogData, UL
 pub enum BuildError {
     InvalidTopicIndex,
     InvalidMultiId,
+    InvalidWireSize,
     Encode(EncodeError),
     RecordTooLarge,
     ParameterNameTooLong,
@@ -74,6 +75,9 @@ where
 
         let mut encoded = [0; RECORD_CAP];
         let encoded_len = value.encode(&mut encoded).map_err(BuildError::Encode)?;
+        if encoded_len != T::WIRE_SIZE {
+            return Err(BuildError::InvalidWireSize);
+        }
         if encoded_len > RECORD_CAP {
             return Err(BuildError::RecordTooLarge);
         }
@@ -188,6 +192,50 @@ mod tests {
         let rec = producer.parameter_i32("P", 1).unwrap();
 
         assert_eq!(rec.kind(), crate::RecordKind::Parameter);
+    }
+
+    #[derive(Default)]
+    struct BadSize;
+
+    impl ULogData for BadSize {
+        const FORMAT: &'static str = "uint64_t timestamp;";
+        const NAME: &'static str = "bad_size";
+        const WIRE_SIZE: usize = 8;
+
+        fn encode(&self, buf: &mut [u8]) -> Result<usize, EncodeError> {
+            if buf.len() < 8 {
+                return Err(EncodeError::BufferOverflow);
+            }
+            buf[..4].copy_from_slice(&[1, 2, 3, 4]);
+            Ok(4)
+        }
+
+        fn timestamp(&self) -> u64 {
+            0
+        }
+    }
+
+    enum MismatchMessages {}
+
+    impl crate::ULogRegistry for MismatchMessages {
+        const REGISTRY: crate::Registry = crate::Registry::new(&[crate::MessageMeta {
+            name: BadSize::NAME,
+            format: BadSize::FORMAT,
+            wire_size: BadSize::WIRE_SIZE,
+        }]);
+    }
+
+    impl crate::TopicOf<MismatchMessages> for BadSize {
+        const TOPIC: crate::Topic<Self> = crate::Topic::new(0);
+    }
+
+    #[test]
+    fn data_wire_size_mismatch_is_rejected() {
+        let producer = ULogProducer::<MismatchMessages, CAP, MI>::new();
+        let sample = BadSize;
+        let status = producer.data_instance(&sample, 0);
+
+        assert_eq!(status, Err(BuildError::InvalidWireSize));
     }
 
     enum TestMessagesDefault {}
