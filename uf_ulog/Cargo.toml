@@ -38,6 +38,7 @@ async = ["dep:embedded-io-async"]
 
 [dev-dependencies]
 futures = "0.3"
+futures-test = "0.3.32"
 
 [[example]]
 name = "simple"

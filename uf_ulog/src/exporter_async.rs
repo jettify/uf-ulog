@@ -163,6 +163,12 @@ where
         self.write_message(b'B', &payload).await
     }
 
+    async fn write_sync(
+        &mut self,
+    ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
+        self.write_message(b'S', &wire::ULOG_SYNC_MAGIC).await
+    }
+
     async fn write_format(
         &mut self,
         name: &str,
@@ -290,5 +296,235 @@ where
         record: Record<RECORD_CAP>,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
         self.write_record_inner(record).await
+    }
+
+    pub async fn emit_sync(
+        &mut self,
+    ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
+        self.write_sync().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{LogLevel, ULogData};
+
+    const CAP: usize = 32;
+    const MI: usize = 8;
+
+    #[derive(Default)]
+    struct VecSink {
+        bytes: std::vec::Vec<u8>,
+    }
+
+    impl embedded_io_async::ErrorType for VecSink {
+        type Error = core::convert::Infallible;
+    }
+
+    impl embedded_io_async::Write for VecSink {
+        async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        async fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    struct Sample;
+
+    impl ULogData for Sample {
+        const FORMAT: &'static str = "uint64_t timestamp;";
+        const NAME: &'static str = "sample";
+        const WIRE_SIZE: usize = 8;
+
+        fn encode(&self, _buf: &mut [u8]) -> Result<usize, crate::EncodeError> {
+            Ok(8)
+        }
+
+        fn timestamp(&self) -> u64 {
+            0
+        }
+    }
+
+    enum TestMessages {}
+
+    impl crate::ULogRegistry for TestMessages {
+        const REGISTRY: crate::Registry = crate::Registry::new(&[crate::MessageMeta {
+            name: Sample::NAME,
+            format: Sample::FORMAT,
+            wire_size: Sample::WIRE_SIZE,
+        }]);
+    }
+
+    enum EmptyMessages {}
+
+    impl crate::ULogRegistry for EmptyMessages {
+        const REGISTRY: crate::Registry = crate::Registry::new(&[]);
+    }
+
+    enum MismatchMessages {}
+
+    impl crate::ULogRegistry for MismatchMessages {
+        const REGISTRY: crate::Registry = crate::Registry::new(&[crate::MessageMeta {
+            name: "sample",
+            format: "uint64_t timestamp;",
+            wire_size: 8,
+        }]);
+    }
+
+    #[futures_test::test]
+    async fn core_start_then_accept() {
+        let sink = VecSink::default();
+        let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+
+        let mut core =
+            ULogAsyncCoreExporter::<_, TestMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(100)
+                .await
+                .unwrap();
+
+        core.accept(rec).await.unwrap();
+    }
+
+    #[futures_test::test]
+    async fn startup_and_data_subscription() {
+        let sink = VecSink::default();
+        let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        let mut exporter =
+            ULogAsyncCoreExporter::<_, TestMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(100)
+                .await
+                .unwrap();
+        exporter.accept(rec).await.unwrap();
+    }
+
+    #[futures_test::test]
+    async fn logs_string() {
+        let sink = VecSink::default();
+        let rec = Record::new_log(LogLevel::Info, None, 1, b"hello");
+        let mut exporter =
+            ULogAsyncCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .await
+                .unwrap();
+        exporter.accept(rec).await.unwrap();
+    }
+
+    #[futures_test::test]
+    async fn dropped_streams_is_counted_when_streams_clamp() {
+        let sink = VecSink::default();
+        let rec = Record::new_data(0, 0, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        let mut exporter =
+            ULogAsyncCoreExporter::<_, TestMessages, FormatsPending, CAP, MI, 0>::new(sink)
+                .start(0)
+                .await
+                .unwrap();
+        exporter.accept(rec).await.unwrap();
+        assert_eq!(exporter.dropped_streams(), 1);
+    }
+
+    #[futures_test::test]
+    async fn writes_parameter_message() {
+        let sink = VecSink::default();
+        let rec = Record::new_parameter(b"int32_t TEST_P", ParameterValue::I32(10)).unwrap();
+        let mut exporter =
+            ULogAsyncCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .await
+                .unwrap();
+        exporter.accept(rec).await.unwrap();
+    }
+
+    #[futures_test::test]
+    async fn data_wire_size_mismatch_rejected() {
+        let sink = VecSink::default();
+        let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4]).unwrap();
+        let mut exporter =
+            ULogAsyncCoreExporter::<_, MismatchMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .await
+                .unwrap();
+
+        assert_eq!(
+            exporter.accept(rec).await,
+            Err(ExportError::InvalidWireSize)
+        );
+    }
+
+    #[futures_test::test]
+    async fn default_max_multi_ids_accepts_instance_three() {
+        let sink = VecSink::default();
+        let rec = Record::new_data(0, 3, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        let mut exporter = ULogAsyncCoreExporter::<_, TestMessages, FormatsPending, CAP>::new(sink)
+            .start(0)
+            .await
+            .unwrap();
+        exporter.accept(rec).await.unwrap();
+    }
+
+    #[futures_test::test]
+    async fn default_max_multi_ids_rejects_instance_four_after_startup() {
+        let sink = VecSink::default();
+        let mut exporter = ULogAsyncCoreExporter::<_, TestMessages, FormatsPending, CAP>::new(sink)
+            .start(0)
+            .await
+            .unwrap();
+        let rec = Record::new_data(0, 4, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+
+        assert_eq!(exporter.accept(rec).await, Err(ExportError::InvalidMultiId));
+    }
+
+    #[futures_test::test]
+    async fn log_record_wire_bytes_match() {
+        let sink = VecSink::default();
+        let mut exporter =
+            ULogAsyncCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .await
+                .unwrap();
+        let rec = Record::new_log(LogLevel::Info, None, 0x0102_0304_0506_0708, b"hi");
+
+        exporter.accept(rec).await.unwrap();
+        assert!(exporter
+            .writer_mut()
+            .bytes
+            .ends_with(&[11, 0, b'L', b'6', 8, 7, 6, 5, 4, 3, 2, 1, b'h', b'i']));
+    }
+
+    #[futures_test::test]
+    async fn parameter_record_wire_bytes_match() {
+        let sink = VecSink::default();
+        let mut exporter =
+            ULogAsyncCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .await
+                .unwrap();
+        let rec = Record::new_parameter(b"k", ParameterValue::I32(1)).unwrap();
+
+        exporter.accept(rec).await.unwrap();
+        assert!(exporter
+            .writer_mut()
+            .bytes
+            .ends_with(&[6, 0, b'P', 1, b'k', 1, 0, 0, 0]));
+    }
+
+    #[futures_test::test]
+    async fn test_sync_message() {
+        let sink = VecSink::default();
+        let rec = Record::new_parameter(b"int32_t TEST_P", ParameterValue::I32(10)).unwrap();
+        let mut exporter =
+            ULogAsyncCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
+                .start(0)
+                .await
+                .unwrap();
+
+        exporter.accept(rec).await.unwrap();
+        exporter.emit_sync().await.unwrap();
+
+        let expected = [0x2F, 0x73, 0x13, 0x20, 0x25, 0x0C, 0xBB, 0x12];
+        assert!(exporter.writer_mut().bytes.ends_with(&expected));
     }
 }
