@@ -407,7 +407,7 @@ mod tests {
         let rec = Record::new_log(LogLevel::Info, None, 1, b"hello");
         let mut exporter =
             ULogAsyncCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
-                .start(0)
+                .start(1_772_079_727_637)
                 .await
                 .unwrap();
         exporter.accept(rec).await.unwrap();
@@ -419,7 +419,7 @@ mod tests {
         let rec = Record::new_data(0, 0, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
         let mut exporter =
             ULogAsyncCoreExporter::<_, TestMessages, FormatsPending, CAP, MI, 0>::new(sink)
-                .start(0)
+                .start(1_772_079_727_637)
                 .await
                 .unwrap();
         exporter.accept(rec).await.unwrap();
@@ -432,7 +432,7 @@ mod tests {
         let rec = Record::new_parameter(b"int32_t TEST_P", ParameterValue::I32(10)).unwrap();
         let mut exporter =
             ULogAsyncCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
-                .start(0)
+                .start(1_772_079_727_637)
                 .await
                 .unwrap();
         exporter.accept(rec).await.unwrap();
@@ -444,7 +444,7 @@ mod tests {
         let rec = Record::new_data(0, 1, 0, &[1, 2, 3, 4]).unwrap();
         let mut exporter =
             ULogAsyncCoreExporter::<_, MismatchMessages, FormatsPending, CAP, MI, 64>::new(sink)
-                .start(0)
+                .start(1_772_079_727_637)
                 .await
                 .unwrap();
 
@@ -459,7 +459,7 @@ mod tests {
         let sink = VecSink::default();
         let rec = Record::new_data(0, 3, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
         let mut exporter = ULogAsyncCoreExporter::<_, TestMessages, FormatsPending, CAP>::new(sink)
-            .start(0)
+            .start(1_772_079_727_637)
             .await
             .unwrap();
         exporter.accept(rec).await.unwrap();
@@ -469,7 +469,7 @@ mod tests {
     async fn default_max_multi_ids_rejects_instance_four_after_startup() {
         let sink = VecSink::default();
         let mut exporter = ULogAsyncCoreExporter::<_, TestMessages, FormatsPending, CAP>::new(sink)
-            .start(0)
+            .start(1_772_079_727_637)
             .await
             .unwrap();
         let rec = Record::new_data(0, 4, 0, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
@@ -482,7 +482,7 @@ mod tests {
         let sink = VecSink::default();
         let mut exporter =
             ULogAsyncCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
-                .start(0)
+                .start(1_772_079_727_637)
                 .await
                 .unwrap();
         let rec = Record::new_log(LogLevel::Info, None, 0x0102_0304_0506_0708, b"hi");
@@ -499,7 +499,7 @@ mod tests {
         let sink = VecSink::default();
         let mut exporter =
             ULogAsyncCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
-                .start(0)
+                .start(1_772_079_727_637)
                 .await
                 .unwrap();
         let rec = Record::new_parameter(b"k", ParameterValue::I32(1)).unwrap();
@@ -517,7 +517,7 @@ mod tests {
         let rec = Record::new_parameter(b"int32_t TEST_P", ParameterValue::I32(10)).unwrap();
         let mut exporter =
             ULogAsyncCoreExporter::<_, EmptyMessages, FormatsPending, CAP, MI, 64>::new(sink)
-                .start(0)
+                .start(1_772_079_727_637)
                 .await
                 .unwrap();
 
