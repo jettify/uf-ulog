@@ -30,13 +30,12 @@ pub fn stream_slot<const MAX_MULTI_IDS: usize>(
     topic_index: usize,
     instance: usize,
 ) -> Option<usize> {
-    topic_index
-        .checked_mul(MAX_MULTI_IDS)
-        .and_then(|v| v.checked_add(instance))
+    let v = topic_index.checked_mul(MAX_MULTI_IDS)?;
+    v.checked_add(instance)
 }
 
 pub fn slot_msg_id<E>(slot: usize) -> Result<u16, ExportError<E>> {
-    u16::try_from(slot).map_err(|_| ExportError::TooManyStreams)
+    u16::try_from(slot).map_err(|_e| ExportError::TooManyStreams)
 }
 
 pub fn checked_total_len<E>(
@@ -61,7 +60,7 @@ pub fn write_header(timestamp_micros: u64) -> [u8; 16] {
 }
 
 pub fn message_header<E>(payload_len: usize, msg_type: u8) -> Result<[u8; 3], ExportError<E>> {
-    let size = u16::try_from(payload_len).map_err(|_| ExportError::MessageTooLarge)?;
+    let size = u16::try_from(payload_len).map_err(|_e| ExportError::MessageTooLarge)?;
     let mut header = [0u8; 3];
     header[0..2].copy_from_slice(&size.to_le_bytes());
     header[2] = msg_type;
@@ -92,7 +91,7 @@ pub fn tagged_log_payload_len<E>(text_len: usize) -> Result<usize, ExportError<E
 }
 
 pub fn parameter_payload_len<E>(key: &[u8], value: &[u8]) -> Result<usize, ExportError<E>> {
-    let _ = u8::try_from(key.len()).map_err(|_| ExportError::MessageTooLarge)?;
+    let _ = u8::try_from(key.len()).map_err(|_e| ExportError::MessageTooLarge)?;
     let value_offset = checked_total_len(1, key.len(), usize::MAX)?;
     checked_total_len(value_offset, value.len(), usize::MAX)
 }
@@ -124,6 +123,6 @@ pub fn tagged_log_prefix(level: u8, tag: u16, timestamp: u64) -> [u8; 11] {
 }
 
 pub fn parameter_prefix<E>(key: &[u8]) -> Result<[u8; 1], ExportError<E>> {
-    let key_len = u8::try_from(key.len()).map_err(|_| ExportError::MessageTooLarge)?;
+    let key_len = u8::try_from(key.len()).map_err(|_e| ExportError::MessageTooLarge)?;
     Ok([key_len])
 }

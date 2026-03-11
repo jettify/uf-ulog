@@ -109,7 +109,7 @@ where
             RecordMeta::Data {
                 topic_index,
                 instance,
-                ts: _,
+                ..
             } => {
                 let topic_index_usize = usize::from(topic_index);
                 if usize::from(instance) >= MAX_MULTI_IDS {

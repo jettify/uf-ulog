@@ -130,14 +130,11 @@ fn expand_registry_derive(input: &DeriveInput) -> syn::Result<proc_macro2::Token
         ));
     }
 
-    let enum_data = match &input.data {
-        syn::Data::Enum(data) => data,
-        _ => {
-            return Err(syn::Error::new_spanned(
-                enum_ident,
-                "ULogRegistry can only be derived for enums",
-            ));
-        }
+    let syn::Data::Enum(enum_data) = &input.data else {
+        return Err(syn::Error::new_spanned(
+            enum_ident,
+            "ULogRegistry can only be derived for enums",
+        ));
     };
 
     let mut seen_types = BTreeSet::new();
@@ -173,7 +170,7 @@ fn expand_registry_derive(input: &DeriveInput) -> syn::Result<proc_macro2::Token
             }
         }
     });
-
+    #[allow(clippy::cast_possible_truncation)]
     let topic_impls = message_types.iter().enumerate().map(|(idx, ty)| {
         let idx_lit = idx as u16;
         quote! {
