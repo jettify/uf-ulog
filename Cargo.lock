@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "uf_ulog"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "embedded-io",
  "embedded-io-async",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "uf_ulog_macro"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
