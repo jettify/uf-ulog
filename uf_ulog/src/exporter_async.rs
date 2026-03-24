@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
 use crate::exporter::{FormatsPending, StreamingReady};
-use crate::wire;
+use crate::wire::{self, MessageType};
 use crate::{ExportError, ParameterValue, Record, RecordMeta, ULogRegistry};
 
 pub struct ULogAsyncCoreExporter<
@@ -164,13 +164,14 @@ where
         &mut self,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
         let payload = [0u8; 40];
-        self.write_message(b'B', &payload).await
+        self.write_message(MessageType::FlagBits, &payload).await
     }
 
     async fn write_sync(
         &mut self,
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
-        self.write_message(b'S', &wire::ULOG_SYNC_MAGIC).await
+        self.write_message(MessageType::Sync, &wire::ULOG_SYNC_MAGIC)
+            .await
     }
 
     async fn write_format(
@@ -182,7 +183,7 @@ where
             wire::format_payload_len::<<W as embedded_io_async::ErrorType>::Error>(name, format)?;
         let separator = [b':'];
         let parts = [name.as_bytes(), &separator, format.as_bytes()];
-        self.write_message_parts(b'F', &parts).await
+        self.write_message_parts(MessageType::Format, &parts).await
     }
 
     async fn write_add_subscription(
@@ -195,7 +196,8 @@ where
             wire::add_subscription_payload_len::<<W as embedded_io_async::ErrorType>::Error>(name)?;
         let prefix = wire::add_subscription_prefix(multi_id, msg_id);
         let parts = [&prefix[..], name.as_bytes()];
-        self.write_message_parts(b'A', &parts).await
+        self.write_message_parts(MessageType::AddSubscription, &parts)
+            .await
     }
 
     async fn write_data(
@@ -206,7 +208,7 @@ where
         let _ = wire::data_payload_len::<<W as embedded_io_async::ErrorType>::Error>(data.len())?;
         let prefix = wire::data_prefix(msg_id);
         let parts = [&prefix[..], data];
-        self.write_message_parts(b'D', &parts).await
+        self.write_message_parts(MessageType::Data, &parts).await
     }
 
     async fn write_log(
@@ -218,7 +220,8 @@ where
         let _ = wire::log_payload_len::<<W as embedded_io_async::ErrorType>::Error>(text.len())?;
         let prefix = wire::log_prefix(level, timestamp);
         let parts = [&prefix[..], text];
-        self.write_message_parts(b'L', &parts).await
+        self.write_message_parts(MessageType::LoggedString, &parts)
+            .await
     }
 
     async fn write_tagged_log(
@@ -232,7 +235,8 @@ where
             wire::tagged_log_payload_len::<<W as embedded_io_async::ErrorType>::Error>(text.len())?;
         let prefix = wire::tagged_log_prefix(level, tag, timestamp);
         let parts = [&prefix[..], text];
-        self.write_message_parts(b'C', &parts).await
+        self.write_message_parts(MessageType::TaggedLoggedString, &parts)
+            .await
     }
 
     async fn write_parameter(
@@ -248,12 +252,13 @@ where
             wire::parameter_payload_len::<<W as embedded_io_async::ErrorType>::Error>(key, &raw)?;
         let key_len = wire::parameter_prefix::<<W as embedded_io_async::ErrorType>::Error>(key)?;
         let parts = [&key_len[..], key, &raw];
-        self.write_message_parts(b'P', &parts).await
+        self.write_message_parts(MessageType::Parameter, &parts)
+            .await
     }
 
     async fn write_message(
         &mut self,
-        msg_type: u8,
+        msg_type: MessageType,
         payload: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
         let header = wire::message_header(payload.len(), msg_type)?;
@@ -263,7 +268,7 @@ where
 
     async fn write_message_parts(
         &mut self,
-        msg_type: u8,
+        msg_type: MessageType,
         parts: &[&[u8]],
     ) -> Result<(), ExportError<<W as embedded_io_async::ErrorType>::Error>> {
         let mut payload_len = 0usize;
