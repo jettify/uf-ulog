@@ -15,6 +15,34 @@ pub enum ExportError<WriteError> {
     TooManyStreams,
     MessageTooLarge,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageType {
+    AddSubscription,
+    TaggedLoggedString,
+    Data,
+    Format,
+    LoggedString,
+    Parameter,
+    FlagBits,
+    Sync,
+}
+
+impl MessageType {
+    pub(crate) const fn as_u8(self) -> u8 {
+        match self {
+            Self::AddSubscription => b'A',
+            Self::TaggedLoggedString => b'C',
+            Self::Data => b'D',
+            Self::Format => b'F',
+            Self::LoggedString => b'L',
+            Self::Parameter => b'P',
+            Self::FlagBits => b'B',
+            Self::Sync => b'S',
+        }
+    }
+}
+
 pub(crate) const ULOG_HEADER_MAGIC: [u8; 8] = [0x55, 0x4c, 0x6f, 0x67, 0x01, 0x12, 0x35, 0x01];
 pub(crate) const ULOG_SYNC_MAGIC: [u8; 8] = [0x2F, 0x73, 0x13, 0x20, 0x25, 0x0C, 0xBB, 0x12];
 
@@ -59,11 +87,14 @@ pub fn write_header(timestamp_micros: u64) -> [u8; 16] {
     header
 }
 
-pub fn message_header<E>(payload_len: usize, msg_type: u8) -> Result<[u8; 3], ExportError<E>> {
+pub fn message_header<E>(
+    payload_len: usize,
+    msg_type: MessageType,
+) -> Result<[u8; 3], ExportError<E>> {
     let size = u16::try_from(payload_len).map_err(|_e| ExportError::MessageTooLarge)?;
     let mut header = [0u8; 3];
     header[0..2].copy_from_slice(&size.to_le_bytes());
-    header[2] = msg_type;
+    header[2] = msg_type.as_u8();
     Ok(header)
 }
 
@@ -125,4 +156,21 @@ pub fn tagged_log_prefix(level: u8, tag: u16, timestamp: u64) -> [u8; 11] {
 pub fn parameter_prefix<E>(key: &[u8]) -> Result<[u8; 1], ExportError<E>> {
     let key_len = u8::try_from(key.len()).map_err(|_e| ExportError::MessageTooLarge)?;
     Ok([key_len])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MessageType;
+
+    #[test]
+    fn message_type_matches_ulog_spec_bytes() {
+        assert_eq!(MessageType::AddSubscription.as_u8(), b'A');
+        assert_eq!(MessageType::TaggedLoggedString.as_u8(), b'C');
+        assert_eq!(MessageType::Data.as_u8(), b'D');
+        assert_eq!(MessageType::Format.as_u8(), b'F');
+        assert_eq!(MessageType::LoggedString.as_u8(), b'L');
+        assert_eq!(MessageType::Parameter.as_u8(), b'P');
+        assert_eq!(MessageType::FlagBits.as_u8(), b'B');
+        assert_eq!(MessageType::Sync.as_u8(), b'S');
+    }
 }

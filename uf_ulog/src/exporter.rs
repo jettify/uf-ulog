@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use crate::wire;
+use crate::wire::{self, MessageType};
 use crate::{ExportError, ParameterValue, Record, RecordMeta, ULogRegistry};
 
 pub struct FormatsPending;
@@ -162,11 +162,11 @@ where
 
     fn write_flag_bits(&mut self) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         let payload = [0u8; 40];
-        self.write_message(b'B', &payload)
+        self.write_message(MessageType::FlagBits, &payload)
     }
 
     fn write_sync(&mut self) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
-        self.write_message(b'S', &wire::ULOG_SYNC_MAGIC)
+        self.write_message(MessageType::Sync, &wire::ULOG_SYNC_MAGIC)
     }
 
     fn write_format(
@@ -177,7 +177,7 @@ where
         let _ = wire::format_payload_len::<<W as embedded_io::ErrorType>::Error>(name, format)?;
         let separator = [b':'];
         let parts = [name.as_bytes(), &separator, format.as_bytes()];
-        self.write_message_parts(b'F', &parts)
+        self.write_message_parts(MessageType::Format, &parts)
     }
 
     fn write_add_subscription(
@@ -189,7 +189,7 @@ where
         let _ = wire::add_subscription_payload_len::<<W as embedded_io::ErrorType>::Error>(name)?;
         let prefix = wire::add_subscription_prefix(multi_id, msg_id);
         let parts = [&prefix[..], name.as_bytes()];
-        self.write_message_parts(b'A', &parts)
+        self.write_message_parts(MessageType::AddSubscription, &parts)
     }
 
     fn write_data(
@@ -200,7 +200,7 @@ where
         let _ = wire::data_payload_len::<<W as embedded_io::ErrorType>::Error>(data.len())?;
         let prefix = wire::data_prefix(msg_id);
         let parts = [&prefix[..], data];
-        self.write_message_parts(b'D', &parts)
+        self.write_message_parts(MessageType::Data, &parts)
     }
 
     fn write_log(
@@ -212,7 +212,7 @@ where
         let _ = wire::log_payload_len::<<W as embedded_io::ErrorType>::Error>(text.len())?;
         let prefix = wire::log_prefix(level, timestamp);
         let parts = [&prefix[..], text];
-        self.write_message_parts(b'L', &parts)
+        self.write_message_parts(MessageType::LoggedString, &parts)
     }
 
     fn write_tagged_log(
@@ -225,7 +225,7 @@ where
         let _ = wire::tagged_log_payload_len::<<W as embedded_io::ErrorType>::Error>(text.len())?;
         let prefix = wire::tagged_log_prefix(level, tag, timestamp);
         let parts = [&prefix[..], text];
-        self.write_message_parts(b'C', &parts)
+        self.write_message_parts(MessageType::TaggedLoggedString, &parts)
     }
 
     fn write_parameter(
@@ -240,12 +240,12 @@ where
         let _ = wire::parameter_payload_len::<<W as embedded_io::ErrorType>::Error>(key, &raw)?;
         let key_len = wire::parameter_prefix::<<W as embedded_io::ErrorType>::Error>(key)?;
         let parts = [&key_len[..], key, &raw];
-        self.write_message_parts(b'P', &parts)
+        self.write_message_parts(MessageType::Parameter, &parts)
     }
 
     fn write_message(
         &mut self,
-        msg_type: u8,
+        msg_type: MessageType,
         payload: &[u8],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         let header = wire::message_header(payload.len(), msg_type)?;
@@ -255,7 +255,7 @@ where
 
     fn write_message_parts(
         &mut self,
-        msg_type: u8,
+        msg_type: MessageType,
         parts: &[&[u8]],
     ) -> Result<(), ExportError<<W as embedded_io::ErrorType>::Error>> {
         let mut payload_len = 0usize;
