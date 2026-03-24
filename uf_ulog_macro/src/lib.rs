@@ -271,8 +271,7 @@ fn build_format_string(field_infos: &[FieldInfo]) -> String {
     field_infos
         .iter()
         .map(|fi| format!("{} {};", fi.ty.format_ulog(), fi.name))
-        .collect::<Vec<_>>()
-        .join("")
+        .collect::<String>()
 }
 
 fn generate_impl(

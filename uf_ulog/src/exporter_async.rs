@@ -129,17 +129,21 @@ where
                     return Ok(());
                 };
 
-                if slot >= MAX_STREAMS {
-                    self.dropped_streams = self.dropped_streams.saturating_add(1);
-                    return Ok(());
-                }
-
                 let msg_id = wire::slot_msg_id::<<W as embedded_io_async::ErrorType>::Error>(slot)?;
 
-                if self.subscribed[slot] == 0 {
+                let Some(subscribed) = self.subscribed.get(slot).copied() else {
+                    self.dropped_streams = self.dropped_streams.saturating_add(1);
+                    return Ok(());
+                };
+
+                if subscribed == 0 {
                     self.write_add_subscription(instance, msg_id, meta.name)
                         .await?;
-                    self.subscribed[slot] = 1;
+                    let Some(subscribed) = self.subscribed.get_mut(slot) else {
+                        self.dropped_streams = self.dropped_streams.saturating_add(1);
+                        return Ok(());
+                    };
+                    *subscribed = 1;
                 }
 
                 self.write_data(msg_id, record.bytes()).await

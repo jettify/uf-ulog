@@ -121,7 +121,7 @@ where
 }
 
 fn make_text<const RECORD_CAP: usize>(msg: &str) -> heapless::Vec<u8, RECORD_CAP> {
-    debug_assert!(msg.is_ascii());
+    debug_assert!(msg.is_ascii(), "ulog string records must be ASCII");
     let mut text = heapless::Vec::new();
     let end = core::cmp::min(msg.len(), RECORD_CAP);
     let _ = text.extend_from_slice(&msg.as_bytes()[..end]);
